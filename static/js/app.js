@@ -294,6 +294,9 @@
         const dayBox = document.createElement("div");
         dayBox.className = "result-day-box";
         const activitiesList = (day.activities || []).map((a) => `<li>${escapeHtml(a)}</li>`).join("");
+        // day.hotel is a string with the hotel info, etc. for each day
+        // day.other is a string with the flight info and any other info
+        // probably want to grab the other fields from day activities to format out times and things?
         dayBox.innerHTML = `
           <div class="result-day-header">Day ${day.day_number} — ${escapeHtml(day.date || "")}</div>
           <div class="result-day-hotel"><strong>Hotel:</strong> ${escapeHtml(day.hotel || "—")}</div>

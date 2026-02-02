@@ -17,7 +17,7 @@ SAVED_ITINERARIES = {}
 PRESET_AIRPORTS = [
     {"code": "SFO", "name": "San Francisco (SFO)"},
     {"code": "LAX", "name": "Los Angeles (LAX)"},
-    {"code": "JFK", "name": "New York JFK (JFK)"},
+    {"code": "JFK", "name": "New York JFK (JFK)"}, # Newark and Lagaurdia don't exist okay
     {"code": "ORD", "name": "Chicago O'Hare (ORD)"},
     {"code": "DFW", "name": "Dallas/Fort Worth (DFW)"},
     {"code": "SEA", "name": "Seattle (SEA)"},
@@ -84,13 +84,44 @@ def build_trip_plan(trip_data: dict) -> dict:
     destination = trip_data.get("destination", "N/A")
     dep_date = trip_data.get("departure_date", "")
     ret_date = trip_data.get("return_date", "")
-    total_budget = float(trip_data.get("budget", 0)) # should confirm if end budget is the same as total budget
+    total_budget = float(trip_data.get("budget", 0)) # should confirm if end budget is the same as total budget, make sure the other budgets sum to this
     prefer_red_eyes = trip_data.get("prefer_red_eyes", False)
     activity_types = trip_data.get("activity_types") or []
 
     # --- Variables to be populated by stub / real APIs ---
+    # raw_flights is a list of flights for each day of the trip
+    # each flight is a dictionary with the following keys:
+    # - description: str
+    # - origin: str
+    # - destination: str
+    # - departure_date: str
+    # - arrival_date: str
+    # - cost: float
+    # None for no flights
     raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget)
+
+    # raw_hotels is a list of hotels for each day of the trip
+    # each hotel is a dictionary with the following keys:
+    # - name: str
+    # - description: str
+    # - cost: float
+    # - location: str
+    # - type: str
+    # - rating: float
+    # None for no hotels
+    # currently only name is required / used
     raw_hotels = search_hotels(destination, dep_date, ret_date, total_budget)
+
+    # raw_activities is a list of activities for each day of the trip
+    # each activity is a dictionary with the following keys:
+    # - name: str
+    # - description: str
+    # - cost: float
+    # - location: str
+    # - type: str
+    # - rating: float
+    # None for no activities
+    # currently only name is required / used
     raw_activities = search_activities(destination, activity_types, total_budget)
 
     # Flights: list of { "description": str, "cost": float }
@@ -99,13 +130,17 @@ def build_trip_plan(trip_data: dict) -> dict:
         for f in raw_flights:
             flights.append({
                 "description": f.get("description", "Flight"),
+                "origin": f.get("origin", "N/A"),
+                "destination": f.get("destination", "N/A"),
+                "departure_date": f.get("departure_date", "N/A"),
+                "arrival_date": f.get("arrival_date", "N/A"),
                 "cost": float(f.get("cost", 0)),
             })
     else:
         # Placeholder when search_flights() not implemented
         flights = [
-            {"description": f"Outbound: {origin} → {destination} ({dep_date}) — placeholder", "cost": 0},
-            {"description": f"Return: {destination} → {origin} ({ret_date}) — placeholder", "cost": 0},
+            {"description": f"Outbound: {origin} → {destination} ({dep_date}) — placeholder", "origin": origin, "destination": destination, "departure_date": dep_date, "return_date": dep_date, "cost": 0},
+            {"description": f"Return: {destination} → {origin} ({ret_date}) — placeholder", "origin": destination, "destination": origin, "departure_date": ret_date, "return_date": ret_date, "cost": 0},
         ]
 
     # Days: one entry per day of the trip; each has activities, hotel, other, daily_budget
@@ -126,12 +161,18 @@ def build_trip_plan(trip_data: dict) -> dict:
             raw_day_activities = raw_activities[i] if raw_activities and i < len(raw_activities) else None
             hotel_name = (raw_hotel.get("name") if isinstance(raw_hotel, dict) else raw_hotel) or "Hotel TBD"
             activity_list = list(raw_day_activities) if isinstance(raw_day_activities, list) else ["Activities TBD"]
+            # flight info is included here as well as in the other field
+            flight_info = ""
+            for f in flights:
+                if f.get("departure_date").isoformat() == date_str:
+                    flight_info = flight_info + "Flight from " + f.get("origin") + " to " + f.get("destination") + " on " + f.get("departure_date")
+            flight_info = flight_info if flight_info else "No flight today"
             days.append({
                 "date": date_str,
                 "day_number": i + 1,
                 "activities": activity_list,
                 "hotel": hotel_name,
-                "other": "",
+                "other": flight_info + "",
                 "daily_budget": daily_budget_placeholder,
             })
     else:
@@ -208,6 +249,8 @@ def api_create_trip():
         "prefer_red_eyes": bool(data.get("prefer_red_eyes", False)),
     }
     TRIPS.append(trip_data)
+
+    # Get the recommended itinerary from the build_trip_plan function using the trip_data
     plan = build_trip_plan(trip_data)
     return jsonify({"success": True, "plan": plan, "trip_id": len(TRIPS)})
 
