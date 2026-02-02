@@ -16,8 +16,18 @@
       <nav>
         <button type="button" class="nav-btn active" data-view="welcome">Home</button>
         <button type="button" class="nav-btn" data-view="trip">New Trip</button>
+        <button type="button" class="nav-btn" id="toggle-saved-panel" aria-expanded="false" aria-controls="saved-panel">Saved trips</button>
       </nav>
     </header>
+
+    <aside id="saved-panel" class="side-panel" aria-label="Saved itineraries" hidden>
+      <div class="side-panel-header">
+        <h3 class="side-panel-title">Saved itineraries</h3>
+        <button type="button" class="side-panel-close" id="close-saved-panel" aria-label="Close panel">&times;</button>
+      </div>
+      <ul id="saved-itineraries-list" class="saved-itineraries-list"></ul>
+      <p id="saved-empty-msg" class="side-panel-empty" hidden>No saved trips yet. Generate a plan and save it below.</p>
+    </aside>
 
     <main>
       <section id="welcome-view" class="view active">
@@ -95,6 +105,14 @@
               <div class="result-total-budget" id="result-total-budget"></div>
               <section class="result-flights" id="result-flights" aria-label="Flights"></section>
               <section class="result-days" id="result-days" aria-label="Daily itinerary"></section>
+              <div class="save-itinerary-section" id="save-itinerary-section">
+                <label for="itinerary-name">Save this plan</label>
+                <div class="save-itinerary-row">
+                  <input type="text" id="itinerary-name" name="itinerary_name" placeholder="e.g. Summer 2025" maxlength="120" />
+                  <button type="button" class="btn btn-primary" id="save-itinerary-btn">Save itinerary</button>
+                </div>
+                <span id="save-itinerary-msg" class="save-itinerary-msg" aria-live="polite"></span>
+              </div>
             </div>
             <div id="results-error" class="results-error" hidden></div>
           </div>

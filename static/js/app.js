@@ -2,6 +2,7 @@
   "use strict";
 
   const BUDGET_DEFAULTS = { min: 500, max: 15000, step: 250 };
+  let currentPlan = null;
 
   function $(sel, el = document) {
     return el.querySelector(sel);
@@ -158,13 +159,111 @@
   }
 
   function clearResults() {
+    currentPlan = null;
     setResultsState("empty");
     const placeholder = $("#results-placeholder");
     if (placeholder) placeholder.textContent = "Submit the form to see your plan here.";
   }
 
+  function refreshSavedList() {
+    fetch("/api/itineraries")
+      .then((r) => r.json())
+      .then((data) => {
+        const list = $("#saved-itineraries-list");
+        const emptyMsg = $("#saved-empty-msg");
+        if (!list) return;
+        list.innerHTML = "";
+        const names = data.names || [];
+        if (emptyMsg) emptyMsg.hidden = names.length > 0;
+        names.forEach((name) => {
+          const li = document.createElement("li");
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "saved-itinerary-btn";
+          btn.textContent = name;
+          btn.addEventListener("click", () => loadSavedItinerary(name));
+          li.appendChild(btn);
+          list.appendChild(li);
+        });
+      })
+      .catch(console.error);
+  }
+
+  function loadSavedItinerary(name) {
+    const encoded = encodeURIComponent(name);
+    fetch(`/api/itineraries/${encoded}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.success && data.plan) {
+          showView("trip");
+          renderPlan(data.plan);
+          closeSavedPanel();
+        }
+      })
+      .catch(console.error);
+  }
+
+  function saveItinerary() {
+    const nameInput = $("#itinerary-name");
+    const name = (nameInput && nameInput.value || "").trim();
+    const msgEl = $("#save-itinerary-msg");
+    if (!name) {
+      if (msgEl) msgEl.textContent = "Enter a name for this itinerary.";
+      return;
+    }
+    if (!currentPlan) {
+      if (msgEl) msgEl.textContent = "No plan to save. Generate a plan first.";
+      return;
+    }
+    if (msgEl) msgEl.textContent = "";
+    fetch("/api/itineraries/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, plan: currentPlan }),
+    })
+      .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+      .then(({ ok, data }) => {
+        if (ok && data.success) {
+          if (msgEl) msgEl.textContent = "Saved as \"" + name + "\".";
+          if (nameInput) nameInput.value = "";
+          refreshSavedList();
+        } else {
+          if (msgEl) msgEl.textContent = data.message || "Could not save.";
+        }
+      })
+      .catch((err) => {
+        if (msgEl) msgEl.textContent = "Error saving.";
+      });
+  }
+
+  function openSavedPanel() {
+    const panel = $("#saved-panel");
+    const toggle = $("#toggle-saved-panel");
+    if (panel) {
+      panel.hidden = false;
+      document.body.classList.add("side-panel-open");
+      refreshSavedList();
+    }
+    if (toggle) toggle.setAttribute("aria-expanded", "true");
+  }
+
+  function closeSavedPanel() {
+    const panel = $("#saved-panel");
+    const toggle = $("#toggle-saved-panel");
+    if (panel) panel.hidden = true;
+    document.body.classList.remove("side-panel-open");
+    if (toggle) toggle.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleSavedPanel() {
+    const panel = $("#saved-panel");
+    if (panel && panel.hidden) openSavedPanel();
+    else closeSavedPanel();
+  }
+
   function renderPlan(plan) {
     if (!plan) return;
+    currentPlan = plan;
     setResultsState("plan");
     const totalEl = $("#result-total-budget");
     const flightsEl = $("#result-flights");
@@ -245,7 +344,18 @@
     $$(".nav-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const view = btn.getAttribute("data-view");
-        if (view) showView(view);
+        if (view) {
+          showView(view);
+          if (view === "trip") {
+            setTimeout(() => {
+              const form = $("#trip-form");
+              if (form) form.reset();
+              $("#budget-value").textContent = formatBudget($("#budget").value || BUDGET_DEFAULTS.max / 2);
+              showDateError("");
+              clearResults();
+            }, 0);
+          }
+        }
       });
     });
     $$("[data-goto]").forEach((el) => {
@@ -254,6 +364,10 @@
         if (view) showView(view);
       });
     });
+    const toggleSaved = $("#toggle-saved-panel");
+    if (toggleSaved) toggleSaved.addEventListener("click", toggleSavedPanel);
+    const closeSaved = $("#close-saved-panel");
+    if (closeSaved) closeSaved.addEventListener("click", closeSavedPanel);
   }
 
   function initForm() {
@@ -274,6 +388,8 @@
         }, 0);
       });
     }
+    const saveBtn = $("#save-itinerary-btn");
+    if (saveBtn) saveBtn.addEventListener("click", saveItinerary);
   }
 
   function init() {

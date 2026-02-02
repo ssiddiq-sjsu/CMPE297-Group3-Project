@@ -12,6 +12,8 @@ app = Flask(__name__, static_folder="static")
 
 # --- In-memory Python variables (no DB) ---
 TRIPS = []  # List of trip dicts submitted by users
+# Saved itineraries: key = user-provided name, value = plan dict (total_budget, flights, days)
+SAVED_ITINERARIES = {}
 PRESET_AIRPORTS = [
     {"code": "SFO", "name": "San Francisco (SFO)"},
     {"code": "LAX", "name": "Los Angeles (LAX)"},
@@ -82,7 +84,7 @@ def build_trip_plan(trip_data: dict) -> dict:
     destination = trip_data.get("destination", "N/A")
     dep_date = trip_data.get("departure_date", "")
     ret_date = trip_data.get("return_date", "")
-    total_budget = float(trip_data.get("budget", 0))
+    total_budget = float(trip_data.get("budget", 0)) # should confirm if end budget is the same as total budget
     prefer_red_eyes = trip_data.get("prefer_red_eyes", False)
     activity_types = trip_data.get("activity_types") or []
 
@@ -208,6 +210,39 @@ def api_create_trip():
     TRIPS.append(trip_data)
     plan = build_trip_plan(trip_data)
     return jsonify({"success": True, "plan": plan, "trip_id": len(TRIPS)})
+
+
+@app.route("/api/itineraries", methods=["GET"])
+def api_list_itineraries():
+    """Return list of saved itinerary names."""
+    return jsonify({"names": list(SAVED_ITINERARIES.keys())})
+
+
+@app.route("/api/itineraries/save", methods=["POST"])
+def api_save_itinerary():
+    """Save a plan under the given name. Body: { "name": str, "plan": plan_dict }."""
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    plan = data.get("plan")
+    if not name:
+        return jsonify({"success": False, "message": "Name is required."}), 400
+    if not plan or not isinstance(plan, dict):
+        return jsonify({"success": False, "message": "Valid plan data is required."}), 400
+    SAVED_ITINERARIES[name] = {
+        "total_budget": plan.get("total_budget", 0),
+        "flights": list(plan.get("flights", [])),
+        "days": list(plan.get("days", [])),
+    }
+    return jsonify({"success": True, "name": name})
+
+
+@app.route("/api/itineraries/<path:name>", methods=["GET"])
+def api_get_itinerary(name):
+    """Return saved plan for the given name (URL-decoded)."""
+    plan = SAVED_ITINERARIES.get(name)
+    if plan is None:
+        return jsonify({"success": False, "message": "Itinerary not found."}), 404
+    return jsonify({"success": True, "plan": plan})
 
 
 def main():
