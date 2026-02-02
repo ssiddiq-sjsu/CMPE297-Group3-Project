@@ -1,3 +1,4 @@
+# CMPE297-Group3-Project
 # Vacay Plan — Vacation Planning Website
 
 A local web app to plan vacations: choose home airport, dates, destination, budget, and activity types. The backend uses in-memory Python variables and **stub (uncompleted) functions** for flight/hotel/activity processing.

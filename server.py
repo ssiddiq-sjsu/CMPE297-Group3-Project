@@ -3,7 +3,7 @@ Vacation planning backend.
 Serves the frontend and provides API endpoints backed by Python variables and stub functions.
 """
 import json
-from datetime import date
+from datetime import date, timedelta
 from flask import Flask, send_from_directory, request, jsonify
 
 from config import PORT, HOST, DEBUG
@@ -73,50 +73,80 @@ def search_activities(destination: str, activity_types: list[str], budget_max: f
     return None
 
 
-def build_trip_plan(trip_data: dict) -> str:
+def build_trip_plan(trip_data: dict) -> dict:
     """
-    Build a text plan from trip data using the stub functions above.
-    Actual processing is not implemented; returns a summary and placeholders.
+    Build a structured plan from trip data. Populate the variables below;
+    when stub APIs return real data, assign it here. Returns a dict for the frontend.
     """
-    flights = search_flights(
-        trip_data.get("home_airport"),
-        trip_data.get("destination"),
-        trip_data.get("departure_date"),
-        trip_data.get("return_date"),
-        trip_data.get("budget", 0),
-    )
-    hotels = search_hotels(
-        trip_data.get("destination"),
-        trip_data.get("departure_date"),
-        trip_data.get("return_date"),
-        trip_data.get("budget", 0),
-    )
-    activities = search_activities(
-        trip_data.get("destination"),
-        trip_data.get("activity_types", []),
-        trip_data.get("budget", 0),
-    )
-
+    origin = trip_data.get("home_airport", "N/A")
+    destination = trip_data.get("destination", "N/A")
+    dep_date = trip_data.get("departure_date", "")
+    ret_date = trip_data.get("return_date", "")
+    total_budget = float(trip_data.get("budget", 0))
     prefer_red_eyes = trip_data.get("prefer_red_eyes", False)
-    # Placeholder output until real APIs are connected
-    lines = [
-        f"Trip: {trip_data.get('destination', 'N/A')}",
-        f"From: {trip_data.get('home_airport', 'N/A')}",
-        f"Depart: {trip_data.get('departure_date', 'N/A')} — Return: {trip_data.get('return_date', 'N/A')}",
-        f"Budget: ${trip_data.get('budget', 0):,.0f}",
-        f"Prefer red-eye flights: {'Yes' if prefer_red_eyes else 'No'}",
-        f"Activities: {', '.join(trip_data.get('activity_types', []) or ['None selected'])}",
-        "",
-        "--- Flights (not yet implemented) ---",
-        "No flight results until search_flights() is implemented.",
-        "",
-        "--- Hotels (not yet implemented) ---",
-        "No hotel results until search_hotels() is implemented.",
-        "",
-        "--- Activities (not yet implemented) ---",
-        "No activity results until search_activities() is implemented.",
-    ]
-    return "\n".join(lines)
+    activity_types = trip_data.get("activity_types") or []
+
+    # --- Variables to be populated by stub / real APIs ---
+    raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget)
+    raw_hotels = search_hotels(destination, dep_date, ret_date, total_budget)
+    raw_activities = search_activities(destination, activity_types, total_budget)
+
+    # Flights: list of { "description": str, "cost": float }
+    flights = []
+    if raw_flights:
+        for f in raw_flights:
+            flights.append({
+                "description": f.get("description", "Flight"),
+                "cost": float(f.get("cost", 0)),
+            })
+    else:
+        # Placeholder when search_flights() not implemented
+        flights = [
+            {"description": f"Outbound: {origin} → {destination} ({dep_date}) — placeholder", "cost": 0},
+            {"description": f"Return: {destination} → {origin} ({ret_date}) — placeholder", "cost": 0},
+        ]
+
+    # Days: one entry per day of the trip; each has activities, hotel, other, daily_budget
+    # Populate from raw_hotels / raw_activities when stubs return real data
+    days = []
+    try:
+        dep_d = date.fromisoformat(dep_date) if dep_date else None
+        ret_d = date.fromisoformat(ret_date) if ret_date else None
+    except ValueError:
+        dep_d = ret_d = None
+    if dep_d and ret_d and dep_d < ret_d:
+        day_count = (ret_d - dep_d).days + 1
+        daily_budget_placeholder = round(total_budget / day_count, 2) if day_count else 0
+        for i in range(day_count):
+            d = dep_d + timedelta(days=i)
+            date_str = d.isoformat()
+            raw_hotel = raw_hotels[i] if raw_hotels and i < len(raw_hotels) else None
+            raw_day_activities = raw_activities[i] if raw_activities and i < len(raw_activities) else None
+            hotel_name = (raw_hotel.get("name") if isinstance(raw_hotel, dict) else raw_hotel) or "Hotel TBD"
+            activity_list = list(raw_day_activities) if isinstance(raw_day_activities, list) else ["Activities TBD"]
+            days.append({
+                "date": date_str,
+                "day_number": i + 1,
+                "activities": activity_list,
+                "hotel": hotel_name,
+                "other": "",
+                "daily_budget": daily_budget_placeholder,
+            })
+    else:
+        days = [{
+            "date": dep_date or "N/A",
+            "day_number": 1,
+            "activities": ["Activities TBD"],
+            "hotel": "Hotel TBD",
+            "other": "",
+            "daily_budget": total_budget,
+        }]
+
+    return {
+        "total_budget": total_budget,
+        "flights": flights,
+        "days": days,
+    }
 
 
 # --- Routes ---
@@ -176,8 +206,8 @@ def api_create_trip():
         "prefer_red_eyes": bool(data.get("prefer_red_eyes", False)),
     }
     TRIPS.append(trip_data)
-    output_text = build_trip_plan(trip_data)
-    return jsonify({"success": True, "output": output_text, "trip_id": len(TRIPS)})
+    plan = build_trip_plan(trip_data)
+    return jsonify({"success": True, "plan": plan, "trip_id": len(TRIPS)})
 
 
 def main():

@@ -87,9 +87,17 @@
           </div>
         </form>
 
-        <div class="output-section">
-          <label for="output-box">Your trip plan</label>
-          <textarea id="output-box" name="output" readonly placeholder="Submit the form to see your plan here…"></textarea>
+        <div class="output-section" id="output-section">
+          <h3 class="results-heading">Your trip plan</h3>
+          <div id="trip-results" class="trip-results" data-state="empty" aria-live="polite">
+            <p class="results-placeholder" id="results-placeholder">Submit the form to see your plan here.</p>
+            <div id="results-content" class="results-content" hidden>
+              <div class="result-total-budget" id="result-total-budget"></div>
+              <section class="result-flights" id="result-flights" aria-label="Flights"></section>
+              <section class="result-days" id="result-days" aria-label="Daily itinerary"></section>
+            </div>
+            <div id="results-error" class="results-error" hidden></div>
+          </div>
         </div>
       </section>
     </main>
