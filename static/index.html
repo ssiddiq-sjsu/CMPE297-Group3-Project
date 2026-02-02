@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vacation Plan — Plan Your Trip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="site-header">
+      <a href="/" class="logo">Vacation Plan</a>
+      <nav>
+        <button type="button" class="nav-btn active" data-view="welcome">Home</button>
+        <button type="button" class="nav-btn" data-view="trip">New Trip</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="welcome-view" class="view active">
+        <div class="welcome-hero">
+          <h1>Plan your perfect vacation</h1>
+          <p class="tagline">Flights, hotels, and activities — all in one place. Pick your dates, set your budget, and we’ll help you plan.</p>
+          <button type="button" class="btn btn-primary cta" data-goto="trip">Start planning</button>
+        </div>
+      </section>
+
+      <section id="trip-view" class="view">
+        <h2 class="section-title">New trip</h2>
+        <form id="trip-form" class="trip-form">
+          <div class="form-grid">
+            <div class="field">
+              <label for="home-airport">Home airport</label>
+              <select id="home-airport" name="home_airport" required>
+                <option value="">Select airport…</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="departure-date">Departure date</label>
+              <input type="date" id="departure-date" name="departure_date" required />
+            </div>
+            <div class="field">
+              <label for="destination">Destination</label>
+              <select id="destination" name="destination" required>
+                <option value="">Select destination…</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="return-date">Return date</label>
+              <input type="date" id="return-date" name="return_date" required />
+              <span id="date-error" class="field-error" aria-live="polite"></span>
+            </div>
+          </div>
+
+          <div class="field flight-prefs">
+            <label class="checkbox-label checkbox-standalone">
+              <input type="checkbox" id="prefer-red-eyes" name="prefer_red_eyes" value="1" />
+              Prefer red-eye flights (overnight departures)
+            </label>
+          </div>
+
+          <div class="field budget-field">
+            <label for="budget">Budget (total trip) — <output id="budget-value">$2,500</output></label>
+            <input type="range" id="budget" name="budget" min="500" max="15000" step="250" value="2500" class="budget-slider" />
+          </div>
+
+          <div class="field">
+            <span class="label">Activities to include</span>
+            <div class="checkbox-group" id="activity-types">
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="museum" /> Museum</label>
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="park" /> Park</label>
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="rental_car" /> Rental car</label>
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="beach" /> Beach</label>
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="hiking" /> Hiking</label>
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="dining" /> Dining / food tours</label>
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="nightlife" /> Nightlife</label>
+              <label class="checkbox-label"><input type="checkbox" name="activity_types" value="shopping" /> Shopping</label>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Generate plan</button>
+            <button type="reset" class="btn btn-ghost">Clear form</button>
+          </div>
+        </form>
+
+        <div class="output-section">
+          <label for="output-box">Your trip plan</label>
+          <textarea id="output-box" name="output" readonly placeholder="Submit the form to see your plan here…"></textarea>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Vacation Planning — Flights, hotels & activities</p>
+      <p>SJSU CMPE297 - Group 3</p>
+      <p>
+        <a href="https://github.com/SJSU-CMPE-297-Group-3(makethisanactuallinkatsomepoint)">GitHub</a>
+      </p>
+    </footer>
+  </div>
+  <script src="/js/app.js"></script>
+</body>
+</html>
