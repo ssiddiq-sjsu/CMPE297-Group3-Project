@@ -164,7 +164,7 @@ def build_trip_plan(trip_data: dict) -> dict:
             # flight info is included here as well as in the other field
             flight_info = ""
             for f in flights:
-                if f.get("departure_date").isoformat() == date_str:
+                if f.get("departure_date") != "N/A" and f.get("departure_date") == date_str:
                     flight_info = flight_info + "Flight from " + f.get("origin") + " to " + f.get("destination") + " on " + f.get("departure_date")
             flight_info = flight_info if flight_info else "No flight today"
             days.append({
