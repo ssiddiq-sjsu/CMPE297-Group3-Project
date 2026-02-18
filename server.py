@@ -3,8 +3,11 @@ Vacation planning backend.
 Serves the frontend and provides API endpoints backed by Python variables and stub functions.
 """
 import json
+import os
 from datetime import date, timedelta
+
 from flask import Flask, send_from_directory, request, jsonify
+from dotenv import load_dotenv
 
 from config import PORT, HOST, DEBUG
 
@@ -55,12 +58,66 @@ PRESET_DESTINATIONS = [
     'Dallas'
 ]
 
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is not set")
+# AMADEUS_API_KEY = os.getenv("AMADEUS_API_KEY")
+# if not AMADEUS_API_KEY:
+#     raise ValueError("AMADEUS_API_KEY is not set")
+
 
 # --- Stub / uncompleted functions (to be implemented later) ---
-def search_flights(origin_code: str, destination: str, departure_date: str, return_date: str, budget_max: float):
-    """Search for flights. Not implemented; returns placeholder."""
-    # TODO: Integrate real flight API (e.g. Amadeus, Skyscanner)
-    return None
+def search_flights(
+    origin_code: str,
+    destination: str,
+    departure_date: str,
+    return_date: str,
+    budget_max: float,
+    prefer_red_eyes: bool = False,
+):
+    """
+    Search for flights via the ReAct agent (OpenAI + Amadeus).
+    Returns a list of flight dicts with origin, destination, departure_date, arrival_date,
+    cost, description, airline, duration, flight_number; or None on failure.
+    """
+    try:
+        from bot.flights_bot import run_agent
+        agent_flights = run_agent(
+            origin_code=origin_code,
+            destination=destination,
+            departure_date=departure_date,
+            return_date=return_date,
+            budget_max=float(budget_max),
+            prefer_red_eyes=prefer_red_eyes,
+        )
+        if not agent_flights:
+            return None
+        raw = []
+        for f in agent_flights:
+            origin = f.get("home_airport", "N/A")
+            dest = f.get("destination", "N/A")
+            dep = f.get("departure_date", "N/A")
+            arr = f.get("arrival_date", "N/A")
+            cost = float(f.get("cost", 0))
+            airline = f.get("airline", "N/A")
+            duration = f.get("duration", "N/A")
+            fn = f.get("flight_number", "N/A")
+            raw.append({
+                "description": f"{airline} {fn}: {origin} → {dest} ({duration})",
+                "origin": origin,
+                "destination": dest,
+                "departure_date": dep,
+                "arrival_date": arr,
+                "cost": cost,
+                "airline": airline,
+                "duration": duration,
+                "flight_number": fn,
+            })
+        print("raw flights: ", raw)
+        return raw
+    except Exception:
+        return None
 
 
 def search_hotels(destination: str, check_in: str, check_out: str, budget_max: float):
@@ -97,8 +154,11 @@ def build_trip_plan(trip_data: dict) -> dict:
     # - departure_date: str
     # - arrival_date: str
     # - cost: float
+    # - airline: str
+    # - duration: str
+    # - flight_number: str
     # None for no flights
-    raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget)
+    raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget, prefer_red_eyes=prefer_red_eyes)
 
     # raw_hotels is a list of hotels for each day of the trip
     # each hotel is a dictionary with the following keys:
@@ -153,8 +213,9 @@ def build_trip_plan(trip_data: dict) -> dict:
         dep_d = ret_d = None
     if dep_d and ret_d and dep_d < ret_d:
         day_count = (ret_d - dep_d).days + 1
-        daily_budget_placeholder = round(total_budget / day_count, 2) if day_count else 0
+        # daily_budget_placeholder = round(total_budget / day_count, 2) if day_count else 0
         for i in range(day_count):
+            daily_budget = 0
             d = dep_d + timedelta(days=i)
             date_str = d.isoformat()
             raw_hotel = raw_hotels[i] if raw_hotels and i < len(raw_hotels) else None
@@ -164,8 +225,10 @@ def build_trip_plan(trip_data: dict) -> dict:
             # flight info is included here as well as in the other field
             flight_info = ""
             for f in flights:
-                if f.get("departure_date") != "N/A" and f.get("departure_date") == date_str:
+                if f.get("departure_date") != "N/A" and f.get("departure_date")[:-6] == date_str:
+                    print("flight info: ", flight_info)
                     flight_info = flight_info + "Flight from " + f.get("origin") + " to " + f.get("destination") + " on " + f.get("departure_date")
+                    daily_budget += f.get("cost")
             flight_info = flight_info if flight_info else "No flight today"
             days.append({
                 "date": date_str,
@@ -173,7 +236,7 @@ def build_trip_plan(trip_data: dict) -> dict:
                 "activities": activity_list,
                 "hotel": hotel_name,
                 "other": flight_info + "",
-                "daily_budget": daily_budget_placeholder,
+                "daily_budget": daily_budget,
             })
     else:
         days = [{
