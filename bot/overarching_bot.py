@@ -9,59 +9,130 @@ Decides which to call, can re-call them, and submits final travel plan.
 """
 
 import json
-import os
-from typing import Any
-
+from typing import Dict, Any, List
 from openai import OpenAI
 
 from .flights_bot import run_agent as run_flights_agent
 from .hotels_bot import run_agent as run_hotels_agent
 
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY not set")
-
-_client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI()
 
 
-# -----------------------------
+# ==========================================================
+# DETERMINISTIC OPTIMIZER
+# ==========================================================
+
+def optimize_trip(
+    flights: List[Dict[str, Any]],
+    hotels: List[Dict[str, Any]],
+    total_budget: float,
+    strategy: str,
+) -> Dict[str, Any]:
+
+    flights_sorted = sorted(flights, key=lambda x: x["cost"])
+    hotels_sorted = sorted(hotels, key=lambda x: x["cost"])
+
+    if not flights_sorted or not hotels_sorted:
+        return {"error": "Missing flight or hotel results."}
+
+    # Always select cheapest flight combo (2 legs)
+    selected_flights = flights_sorted[:2]
+    flight_cost = sum(f["cost"] for f in selected_flights)
+
+    # Always select cheapest hotel
+    selected_hotel = hotels_sorted[0]
+    hotel_cost = selected_hotel["cost"]
+
+    total_cost = flight_cost + hotel_cost
+
+    if total_cost <= total_budget:
+        return {
+            "status": "complete",
+            "strategy": strategy,
+            "flights": selected_flights,
+            "hotel": selected_hotel,
+            "total_cost": total_cost,
+            "remaining_budget": total_budget - total_cost,
+        }
+
+    # Rebalancing logic
+    flight_ratio = 0.7 if strategy == "splurge_flight" else 0.4
+    if strategy == "cheapest_overall":
+        flight_ratio = 1.0
+
+    hotel_ratio = 1 - flight_ratio
+
+    for _ in range(10):
+
+        flight_cap = total_budget * flight_ratio
+        hotel_cap = total_budget * hotel_ratio
+
+        valid_flights = [f for f in flights_sorted if f["cost"] <= flight_cap]
+        valid_hotels = [h for h in hotels_sorted if h["cost"] <= hotel_cap]
+
+        if not valid_flights or not valid_hotels:
+            flight_ratio = min(0.9, flight_ratio + 0.05)
+            hotel_ratio = 1 - flight_ratio
+            continue
+
+        selected_flights = valid_flights[:2]
+        selected_hotel = valid_hotels[0]
+
+        total_cost = sum(f["cost"] for f in selected_flights) + selected_hotel["cost"]
+
+        if total_cost <= total_budget:
+            return {
+                "status": "complete",
+                "strategy": strategy,
+                "flights": selected_flights,
+                "hotel": selected_hotel,
+                "total_cost": total_cost,
+                "remaining_budget": total_budget - total_cost,
+                "allocation_used": {
+                    "flight_ratio": round(flight_ratio, 2),
+                    "hotel_ratio": round(hotel_ratio, 2),
+                },
+            }
+
+        flight_ratio = max(0.1, flight_ratio - 0.05)
+        hotel_ratio = 1 - flight_ratio
+
+    return {"error": "No valid combination within budget."}
+
+
+# ==========================================================
 # TOOL DEFINITIONS
-# -----------------------------
+# ==========================================================
+
 TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "run_flights_agent",
-            "description": "Call the flights sub-agent to search and select optimal flights.",
+            "name": "search_flights",
+            "description": "Search round trip flights",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "origin_code": {"type": "string"},
+                    "origin": {"type": "string"},
                     "destination": {"type": "string"},
                     "departure_date": {"type": "string"},
                     "return_date": {"type": "string"},
-                    "budget_max": {"type": "number"},
-                    "prefer_red_eyes": {"type": "boolean"},
-                    "extra_info": {"type": "string"},
                 },
-                "required": ["origin_code", "destination", "departure_date", "return_date"],
+                "required": ["origin", "destination", "departure_date", "return_date"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "run_hotels_agent",
-            "description": "Call the hotels sub-agent to search and select optimal hotel.",
+            "name": "search_hotels",
+            "description": "Search hotels",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "destination": {"type": "string"},
                     "check_in": {"type": "string"},
                     "check_out": {"type": "string"},
-                    "budget_max": {"type": "number"},
-                    "extra_info": {"type": "string"},
                 },
                 "required": ["destination", "check_in", "check_out"],
             },
@@ -70,191 +141,96 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "submit_final_plan",
-            "description": "Call this once when the full travel plan is finalized.",
+            "name": "optimize_trip",
+            "description": "Optimize flight and hotel within total budget",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "flights": {"type": "array"},
-                    "hotel": {"type": "object"},
-                    "total_estimated_cost": {"type": "number"},
+                    "hotels": {"type": "array"},
+                    "total_budget": {"type": "number"},
+                    "strategy": {
+                        "type": "string",
+                        "enum": ["cheapest_overall", "splurge_flight", "splurge_hotel"],
+                    },
                 },
-                "required": ["total_estimated_cost"],
+                "required": ["flights", "hotels", "total_budget", "strategy"],
             },
         },
     },
 ]
 
 
-# -----------------------------
-# TOOL RUNNER
-# -----------------------------
-def _run_tool(name: str, arguments: dict[str, Any]) -> str:
-    if name == "run_flights_agent":
-        flights = run_flights_agent(
-            origin_code=arguments["origin_code"],
-            destination=arguments["destination"],
-            departure_date=arguments["departure_date"],
-            return_date=arguments["return_date"],
-            budget_max=arguments.get("budget_max", 999999),
-            prefer_red_eyes=arguments.get("prefer_red_eyes", False),
-            extra_info=arguments.get("extra_info", ""),
-        )
-        return json.dumps({"flights": flights}, default=str)
+# ==========================================================
+# REACT STYLE LOOP
+# ==========================================================
 
-    if name == "run_hotels_agent":
-        hotel = run_hotels_agent(
-            destination=arguments["destination"],
-            check_in=arguments["check_in"],
-            check_out=arguments["check_out"],
-            budget_max=arguments.get("budget_max", 999999),
-            extra_info=arguments.get("extra_info", ""),
-        )
-        return json.dumps({"hotel": hotel}, default=str)
-
-    if name == "submit_final_plan":
-        return json.dumps({"status": "complete", **arguments}, default=str)
-
-    return json.dumps({"error": f"Unknown tool: {name}"})
-
-
-# -----------------------------
-# MAIN ORCHESTRATOR
-# -----------------------------
-def run_orchestrator(
-    user_context: str,
-    total_budget: float,
-    strategy: str = "cheapest_overall",
-    model: str = "gpt-4o",
-    max_turns: int = 20,
-):
-    """
-    strategy options:
-    - cheapest_overall
-    - splurge_flight
-    - splurge_hotel
-    - best_quality
-    """
-
-    system_prompt = f"""
-You are a senior travel planning agent.
-
-Total budget: {total_budget}
-Optimization strategy: {strategy}
-
-Strategies:
-- cheapest_overall → minimize total cost
-- splurge_flight → allocate ~70% budget to flights
-- splurge_hotel → allocate ~60% budget to hotel
-- best_quality → maximize quality while staying within total budget
-
-You must:
-1. Allocate budget based on strategy.
-2. Call sub-agents.
-3. If total exceeds budget, rebalance and retry.
-4. When satisfied, call submit_final_plan exactly once.
-"""
-
-    # Budget allocation logic
-    if strategy == "splurge_flight":
-        flight_budget = total_budget * 0.7
-        hotel_budget = total_budget * 0.3
-    elif strategy == "splurge_hotel":
-        flight_budget = total_budget * 0.4
-        hotel_budget = total_budget * 0.6
-    else:
-        flight_budget = total_budget
-        hotel_budget = total_budget
+def run_overarching_bot(user_input: str) -> str:
 
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_context},
+        {
+            "role": "system",
+            "content": """
+You are a travel orchestrator.
+You must:
+1. Call search_flights
+2. Call search_hotels
+3. Call optimize_trip
+Use cheapest_overall unless user specifies splurge preference.
+Stop once optimize_trip returns success.
+""",
+        },
+        {"role": "user", "content": user_input},
     ]
 
-    current_total = 0
-    flights_result = []
-    hotel_result = None
+    while True:
 
-    for _ in range(max_turns):
-        response = _client.chat.completions.create(
-            model=model,
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
             messages=messages,
             tools=TOOLS,
             tool_choice="auto",
         )
 
-        msg = response.choices[0].message
+        message = response.choices[0].message
 
-        if msg.tool_calls:
-            messages.append({
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in msg.tool_calls
-                ],
-            })
+        if message.tool_calls:
+            tool_call = message.tool_calls[0]
+            name = tool_call.function.name
+            args = json.loads(tool_call.function.arguments)
 
-            for tc in msg.tool_calls:
-                name = tc.function.name
-                args = json.loads(tc.function.arguments or "{}")
+            if name == "search_flights":
+                result = run_flights_agent(
+                    origin_code=args["origin"],
+                    destination=args["destination"],
+                    departure_date=args["departure_date"],
+                    return_date=args["return_date"],
+                )
 
-                # Inject allocated budgets
-                if name == "run_flights_agent":
-                    args["budget_max"] = flight_budget
+            elif name == "search_hotels":
+                result = run_hotels_agent(
+                    destination=args["destination"],
+                    check_in=args["check_in"],
+                    check_out=args["check_out"],
+                )
 
-                if name == "run_hotels_agent":
-                    args["budget_max"] = hotel_budget
+            elif name == "optimize_trip":
+                result = optimize_trip(
+                    flights=args["flights"],
+                    hotels=args["hotels"],
+                    total_budget=args["total_budget"],
+                    strategy=args["strategy"],
+                )
 
-                result = _run_tool(name, args)
+            messages.append(message)
 
-                parsed = json.loads(result)
-
-                if name == "run_flights_agent":
-                    flights_result = parsed.get("flights", [])
-                if name == "run_hotels_agent":
-                    hotel_result = parsed.get("hotel")
-
-                # Compute running total
-                current_total = 0
-                if flights_result:
-                    current_total += sum(f["cost"] for f in flights_result)
-                if hotel_result:
-                    current_total += hotel_result.get("cost", 0)
-
-                # Rebalance if needed
-                if current_total > total_budget:
-                    # Tighten most expensive component
-                    if strategy == "splurge_flight":
-                        flight_budget *= 0.9
-                    elif strategy == "splurge_hotel":
-                        hotel_budget *= 0.9
-                    else:
-                        flight_budget *= 0.9
-                        hotel_budget *= 0.9
-
-                if name == "submit_final_plan":
-                    return parsed
-
-                messages.append({
+            messages.append(
+                {
                     "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result),
+                }
+            )
 
         else:
-            break
-
-    return {
-        "status": "complete",
-        "flights": flights_result,
-        "hotel": hotel_result,
-        "total_estimated_cost": current_total,
-    }
+            return message.content
