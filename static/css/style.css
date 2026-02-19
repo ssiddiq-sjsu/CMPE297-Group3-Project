@@ -261,35 +261,283 @@ input::placeholder { color: var(--text-muted); }
   border-top: 1px solid var(--border);
 }
 
-/* Output --- */
+/* Output / Results --- */
 .output-section {
   margin-top: 1.5rem;
 }
-.output-section label {
+.results-heading {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0 0 0.75rem;
+  letter-spacing: -0.02em;
+}
+.trip-results {
+  min-height: 120px;
+}
+.results-placeholder,
+.results-error {
+  padding: 1.25rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.results-error {
+  color: var(--error);
+}
+.results-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.result-total-budget {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  background: var(--accent-muted);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+.result-total-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.result-total-amount {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.result-block-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin: 0 0 0.5rem;
+}
+.result-flights {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.result-flight-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.15rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.result-flight-info {
+  font-size: 0.9rem;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+}
+.result-flight-cost {
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.result-days {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.result-day-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0;
+  align-items: start;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.result-day-box {
+  padding: 1rem 1.25rem;
+  min-width: 0;
+}
+.result-day-header {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+  color: var(--text);
+}
+.result-day-hotel,
+.result-day-activities,
+.result-day-other {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+.result-day-activities ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+.result-day-budget {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem 1rem;
+  min-width: 7rem;
+  background: var(--surface-raised);
+  border-left: 2px dashed var(--border);
+  color: var(--text-muted);
+}
+.result-day-budget-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.result-day-budget-amount {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-top: 0.2rem;
+}
+
+/* Save itinerary --- */
+.save-itinerary-section {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+.save-itinerary-section label {
   display: block;
   font-size: 0.85rem;
   font-weight: 500;
   color: var(--text-muted);
   margin-bottom: 0.5rem;
 }
-#output-box {
-  width: 100%;
-  min-height: 200px;
-  padding: 1rem 1.25rem;
-  font: inherit;
-  font-size: 0.9rem;
-  line-height: 1.6;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  resize: vertical;
-  white-space: pre-wrap;
+.save-itinerary-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
-#output-box::placeholder { color: var(--text-muted); }
-#output-box:focus {
+.save-itinerary-section input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+  padding: 0.6rem 0.85rem;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.save-itinerary-section input:focus {
   outline: none;
   border-color: var(--accent);
+}
+.save-itinerary-msg {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+  min-height: 1.25em;
+}
+
+/* Side panel (saved itineraries) --- */
+.side-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 280px;
+  max-width: 90vw;
+  height: 100vh;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s ease;
+}
+.side-panel[hidden] {
+  transform: translateX(100%);
+  visibility: hidden;
+}
+.side-panel:not([hidden]) {
+  transform: translateX(0);
+}
+.side-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.side-panel-title {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.side-panel-close {
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+}
+.side-panel-close:hover {
+  color: var(--text);
+}
+.saved-itineraries-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.75rem;
+  overflow-y: auto;
+  flex: 1;
+}
+.saved-itineraries-list li {
+  margin-bottom: 0.25rem;
+}
+.saved-itinerary-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.6rem 0.85rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+.saved-itinerary-btn:hover {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+.side-panel-empty {
+  padding: 1rem 1.25rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+body.side-panel-open main {
+  margin-right: 280px;
+  transition: margin-right 0.2s ease;
+}
+main {
+  transition: margin-right 0.2s ease;
 }
 
 /* Footer --- */

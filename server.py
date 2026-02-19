@@ -3,8 +3,11 @@ Vacation planning backend.
 Serves the frontend and provides API endpoints backed by Python variables and stub functions.
 """
 import json
-from datetime import date
+import os
+from datetime import date, timedelta
+
 from flask import Flask, send_from_directory, request, jsonify
+from dotenv import load_dotenv
 
 from config import PORT, HOST, DEBUG
 
@@ -12,10 +15,12 @@ app = Flask(__name__, static_folder="static")
 
 # --- In-memory Python variables (no DB) ---
 TRIPS = []  # List of trip dicts submitted by users
+# Saved itineraries: key = user-provided name, value = plan dict (total_budget, flights, days)
+SAVED_ITINERARIES = {}
 PRESET_AIRPORTS = [
     {"code": "SFO", "name": "San Francisco (SFO)"},
     {"code": "LAX", "name": "Los Angeles (LAX)"},
-    {"code": "JFK", "name": "New York JFK (JFK)"},
+    {"code": "JFK", "name": "New York JFK (JFK)"}, # Newark and Lagaurdia don't exist okay
     {"code": "ORD", "name": "Chicago O'Hare (ORD)"},
     {"code": "DFW", "name": "Dallas/Fort Worth (DFW)"},
     {"code": "SEA", "name": "Seattle (SEA)"},
@@ -53,12 +58,66 @@ PRESET_DESTINATIONS = [
     'Dallas'
 ]
 
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is not set")
+# AMADEUS_API_KEY = os.getenv("AMADEUS_API_KEY")
+# if not AMADEUS_API_KEY:
+#     raise ValueError("AMADEUS_API_KEY is not set")
+
 
 # --- Stub / uncompleted functions (to be implemented later) ---
-def search_flights(origin_code: str, destination: str, departure_date: str, return_date: str, budget_max: float):
-    """Search for flights. Not implemented; returns placeholder."""
-    # TODO: Integrate real flight API (e.g. Amadeus, Skyscanner)
-    return None
+def search_flights(
+    origin_code: str,
+    destination: str,
+    departure_date: str,
+    return_date: str,
+    budget_max: float,
+    prefer_red_eyes: bool = False,
+):
+    """
+    Search for flights via the ReAct agent (OpenAI + Amadeus).
+    Returns a list of flight dicts with origin, destination, departure_date, arrival_date,
+    cost, description, airline, duration, flight_number; or None on failure.
+    """
+    try:
+        from bot.flights_bot import run_agent
+        agent_flights = run_agent(
+            origin_code=origin_code,
+            destination=destination,
+            departure_date=departure_date,
+            return_date=return_date,
+            budget_max=float(budget_max),
+            prefer_red_eyes=prefer_red_eyes,
+        )
+        if not agent_flights:
+            return None
+        raw = []
+        for f in agent_flights:
+            origin = f.get("home_airport", "N/A")
+            dest = f.get("destination", "N/A")
+            dep = f.get("departure_date", "N/A")
+            arr = f.get("arrival_date", "N/A")
+            cost = float(f.get("cost", 0))
+            airline = f.get("airline", "N/A")
+            duration = f.get("duration", "N/A")
+            fn = f.get("flight_number", "N/A")
+            raw.append({
+                "description": f"{airline} {fn}: {origin} → {dest} ({duration})",
+                "origin": origin,
+                "destination": dest,
+                "departure_date": dep,
+                "arrival_date": arr,
+                "cost": cost,
+                "airline": airline,
+                "duration": duration,
+                "flight_number": fn,
+            })
+        print("raw flights: ", raw)
+        return raw
+    except Exception:
+        return None
 
 
 def search_hotels(destination: str, check_in: str, check_out: str, budget_max: float):
@@ -73,50 +132,127 @@ def search_activities(destination: str, activity_types: list[str], budget_max: f
     return None
 
 
-def build_trip_plan(trip_data: dict) -> str:
+def build_trip_plan(trip_data: dict) -> dict:
     """
-    Build a text plan from trip data using the stub functions above.
-    Actual processing is not implemented; returns a summary and placeholders.
+    Build a structured plan from trip data. Populate the variables below;
+    when stub APIs return real data, assign it here. Returns a dict for the frontend.
     """
-    flights = search_flights(
-        trip_data.get("home_airport"),
-        trip_data.get("destination"),
-        trip_data.get("departure_date"),
-        trip_data.get("return_date"),
-        trip_data.get("budget", 0),
-    )
-    hotels = search_hotels(
-        trip_data.get("destination"),
-        trip_data.get("departure_date"),
-        trip_data.get("return_date"),
-        trip_data.get("budget", 0),
-    )
-    activities = search_activities(
-        trip_data.get("destination"),
-        trip_data.get("activity_types", []),
-        trip_data.get("budget", 0),
-    )
-
+    origin = trip_data.get("home_airport", "N/A")
+    destination = trip_data.get("destination", "N/A")
+    dep_date = trip_data.get("departure_date", "")
+    ret_date = trip_data.get("return_date", "")
+    total_budget = float(trip_data.get("budget", 0)) # should confirm if end budget is the same as total budget, make sure the other budgets sum to this
     prefer_red_eyes = trip_data.get("prefer_red_eyes", False)
-    # Placeholder output until real APIs are connected
-    lines = [
-        f"Trip: {trip_data.get('destination', 'N/A')}",
-        f"From: {trip_data.get('home_airport', 'N/A')}",
-        f"Depart: {trip_data.get('departure_date', 'N/A')} — Return: {trip_data.get('return_date', 'N/A')}",
-        f"Budget: ${trip_data.get('budget', 0):,.0f}",
-        f"Prefer red-eye flights: {'Yes' if prefer_red_eyes else 'No'}",
-        f"Activities: {', '.join(trip_data.get('activity_types', []) or ['None selected'])}",
-        "",
-        "--- Flights (not yet implemented) ---",
-        "No flight results until search_flights() is implemented.",
-        "",
-        "--- Hotels (not yet implemented) ---",
-        "No hotel results until search_hotels() is implemented.",
-        "",
-        "--- Activities (not yet implemented) ---",
-        "No activity results until search_activities() is implemented.",
-    ]
-    return "\n".join(lines)
+    activity_types = trip_data.get("activity_types") or []
+
+    # --- Variables to be populated by stub / real APIs ---
+    # raw_flights is a list of flights for each day of the trip
+    # each flight is a dictionary with the following keys:
+    # - description: str
+    # - origin: str
+    # - destination: str
+    # - departure_date: str
+    # - arrival_date: str
+    # - cost: float
+    # - airline: str
+    # - duration: str
+    # - flight_number: str
+    # None for no flights
+    raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget, prefer_red_eyes=prefer_red_eyes)
+
+    # raw_hotels is a list of hotels for each day of the trip
+    # each hotel is a dictionary with the following keys:
+    # - name: str
+    # - description: str
+    # - cost: float
+    # - location: str
+    # - type: str
+    # - rating: float
+    # None for no hotels
+    # currently only name is required / used
+    raw_hotels = search_hotels(destination, dep_date, ret_date, total_budget)
+
+    # raw_activities is a list of activities for each day of the trip
+    # each activity is a dictionary with the following keys:
+    # - name: str
+    # - description: str
+    # - cost: float
+    # - location: str
+    # - type: str
+    # - rating: float
+    # None for no activities
+    # currently only name is required / used
+    raw_activities = search_activities(destination, activity_types, total_budget)
+
+    # Flights: list of { "description": str, "cost": float }
+    flights = []
+    if raw_flights:
+        for f in raw_flights:
+            flights.append({
+                "description": f.get("description", "Flight"),
+                "origin": f.get("origin", "N/A"),
+                "destination": f.get("destination", "N/A"),
+                "departure_date": f.get("departure_date", "N/A"),
+                "arrival_date": f.get("arrival_date", "N/A"),
+                "cost": float(f.get("cost", 0)),
+            })
+    else:
+        # Placeholder when search_flights() not implemented
+        flights = [
+            {"description": f"Outbound: {origin} → {destination} ({dep_date}) — placeholder", "origin": origin, "destination": destination, "departure_date": dep_date, "return_date": dep_date, "cost": 0},
+            {"description": f"Return: {destination} → {origin} ({ret_date}) — placeholder", "origin": destination, "destination": origin, "departure_date": ret_date, "return_date": ret_date, "cost": 0},
+        ]
+
+    # Days: one entry per day of the trip; each has activities, hotel, other, daily_budget
+    # Populate from raw_hotels / raw_activities when stubs return real data
+    days = []
+    try:
+        dep_d = date.fromisoformat(dep_date) if dep_date else None
+        ret_d = date.fromisoformat(ret_date) if ret_date else None
+    except ValueError:
+        dep_d = ret_d = None
+    if dep_d and ret_d and dep_d < ret_d:
+        day_count = (ret_d - dep_d).days + 1
+        # daily_budget_placeholder = round(total_budget / day_count, 2) if day_count else 0
+        for i in range(day_count):
+            daily_budget = 0
+            d = dep_d + timedelta(days=i)
+            date_str = d.isoformat()
+            raw_hotel = raw_hotels[i] if raw_hotels and i < len(raw_hotels) else None
+            raw_day_activities = raw_activities[i] if raw_activities and i < len(raw_activities) else None
+            hotel_name = (raw_hotel.get("name") if isinstance(raw_hotel, dict) else raw_hotel) or "Hotel TBD"
+            activity_list = list(raw_day_activities) if isinstance(raw_day_activities, list) else ["Activities TBD"]
+            # flight info is included here as well as in the other field
+            flight_info = ""
+            for f in flights:
+                if f.get("departure_date") != "N/A" and f.get("departure_date")[:-6] == date_str:
+                    print("flight info: ", flight_info)
+                    flight_info = flight_info + "Flight from " + f.get("origin") + " to " + f.get("destination") + " on " + f.get("departure_date")
+                    daily_budget += f.get("cost")
+            flight_info = flight_info if flight_info else "No flight today"
+            days.append({
+                "date": date_str,
+                "day_number": i + 1,
+                "activities": activity_list,
+                "hotel": hotel_name,
+                "other": flight_info + "",
+                "daily_budget": daily_budget,
+            })
+    else:
+        days = [{
+            "date": dep_date or "N/A",
+            "day_number": 1,
+            "activities": ["Activities TBD"],
+            "hotel": "Hotel TBD",
+            "other": "",
+            "daily_budget": total_budget,
+        }]
+
+    return {
+        "total_budget": total_budget,
+        "flights": flights,
+        "days": days,
+    }
 
 
 # --- Routes ---
@@ -176,8 +312,43 @@ def api_create_trip():
         "prefer_red_eyes": bool(data.get("prefer_red_eyes", False)),
     }
     TRIPS.append(trip_data)
-    output_text = build_trip_plan(trip_data)
-    return jsonify({"success": True, "output": output_text, "trip_id": len(TRIPS)})
+
+    # Get the recommended itinerary from the build_trip_plan function using the trip_data
+    plan = build_trip_plan(trip_data)
+    return jsonify({"success": True, "plan": plan, "trip_id": len(TRIPS)})
+
+
+@app.route("/api/itineraries", methods=["GET"])
+def api_list_itineraries():
+    """Return list of saved itinerary names."""
+    return jsonify({"names": list(SAVED_ITINERARIES.keys())})
+
+
+@app.route("/api/itineraries/save", methods=["POST"])
+def api_save_itinerary():
+    """Save a plan under the given name. Body: { "name": str, "plan": plan_dict }."""
+    data = request.get_json(force=True, silent=True) or {}
+    name = (data.get("name") or "").strip()
+    plan = data.get("plan")
+    if not name:
+        return jsonify({"success": False, "message": "Name is required."}), 400
+    if not plan or not isinstance(plan, dict):
+        return jsonify({"success": False, "message": "Valid plan data is required."}), 400
+    SAVED_ITINERARIES[name] = {
+        "total_budget": plan.get("total_budget", 0),
+        "flights": list(plan.get("flights", [])),
+        "days": list(plan.get("days", [])),
+    }
+    return jsonify({"success": True, "name": name})
+
+
+@app.route("/api/itineraries/<path:name>", methods=["GET"])
+def api_get_itinerary(name):
+    """Return saved plan for the given name (URL-decoded)."""
+    plan = SAVED_ITINERARIES.get(name)
+    if plan is None:
+        return jsonify({"success": False, "message": "Itinerary not found."}), 404
+    return jsonify({"success": True, "plan": plan})
 
 
 def main():
