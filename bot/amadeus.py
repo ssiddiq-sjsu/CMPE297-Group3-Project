@@ -85,11 +85,15 @@ def city_to_iata(city: str) -> str | None:
         res = _amadeus.reference_data.locations.get(
             keyword=city,
             subType="AIRPORT,CITY",
-        )   
+        ) 
+        if not res.data:
+            print("no data in city_to_iata")
+            return None
         print("city_to_iata result: ", res.data[0].get("iataCode"))
         if res.data and len(res.data) > 0:
             return res.data[0].get("iataCode")
-    except Exception:
+    except Exception as e:
+        print("error in city_to_iata: ", e)
         pass
     return None
 
@@ -130,7 +134,9 @@ def query_flights(
     if not _amadeus:
         print("amadeus not initialized")
         return []
+    print("\n\nquery_flights with arguments: ", origin_code, destination, departure_date, return_date, prefer_red_eyes, max_price)
     dest_iata = destination if len(destination) == 3 and destination.isupper() else city_to_iata(destination)
+    print("\n\ndest_iata: ", dest_iata)
     if not dest_iata:
         dest_iata = destination
     outbound_raw = search_flights(origin_code, dest_iata, departure_date)

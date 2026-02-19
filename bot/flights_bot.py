@@ -73,7 +73,7 @@ TOOLS = [
 
 def _run_tool(name: str, arguments: dict[str, Any]) -> str:
     if name == "query_amadeus_flights":
-        print("running query_amadeus_flights with arguments: ", arguments)
+        print("\n\nrunning query_amadeus_flights with arguments: ", arguments)
         result = amadeus_query_flights(
             origin_code=str(arguments.get("origin_code", "")),
             destination=str(arguments.get("destination", "")),
@@ -82,7 +82,7 @@ def _run_tool(name: str, arguments: dict[str, Any]) -> str:
             prefer_red_eyes=bool(arguments.get("prefer_red_eyes", False)),
             max_price=arguments.get("max_budget"),
         )
-        print("amadeus_query_flights result: ", result)
+        print("\n\namadeus_query_flights result: ", result)
         return json.dumps(result, default=str)
     if name == "submit_optimal_flights":
         print("running submit_optimal_flights with arguments: ", arguments)
@@ -139,8 +139,11 @@ For a round trip, submit exactly two flights: first the outbound, then the retur
         choice = response.choices[0]
         msg = choice.message
         if msg.content and not (msg.tool_calls):
+            print("\n\nbreaking")
+            print("msg.content: ", msg.content)
             break
         if msg.tool_calls:
+            print("\n\nmsg.tool_calls: ", msg.tool_calls)
             messages.append({
                 "role": "assistant",
                 "content": msg.content or "",
@@ -155,6 +158,7 @@ For a round trip, submit exactly two flights: first the outbound, then the retur
             })
             for tc in msg.tool_calls:
                 name = tc.function.name
+                print("\n\nrunning tool: ", name)
                 try:
                     args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:

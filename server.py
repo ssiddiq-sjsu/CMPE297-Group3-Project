@@ -132,6 +132,22 @@ def search_activities(destination: str, activity_types: list[str], budget_max: f
     return None
 
 
+def handle_additional_info(info: str) -> None:
+    """
+    Filler: process user-provided additional information (e.g. preferences, notes).
+    Called when the user submits the bottom textbox (Enter or Go).
+    """
+    # Placeholder: store or log; can be wired to trip context / LLM later
+    if info:
+        print(f"[additional info] {info}")
+
+    # fake a delay of 1 second
+    # button spins until the delay is over
+    import time
+    time.sleep(5)
+
+
+
 def build_trip_plan(trip_data: dict) -> dict:
     """
     Build a structured plan from trip data. Populate the variables below;
@@ -349,6 +365,15 @@ def api_get_itinerary(name):
     if plan is None:
         return jsonify({"success": False, "message": "Itinerary not found."}), 404
     return jsonify({"success": True, "plan": plan})
+
+
+@app.route("/api/additional-info", methods=["POST"])
+def api_additional_info():
+    """Accept additional info from the bottom textbox; calls handle_additional_info(info)."""
+    data = request.get_json(force=True, silent=True) or {}
+    info = (data.get("info") or "").strip()
+    handle_additional_info(info)
+    return jsonify({"success": True})
 
 
 def main():

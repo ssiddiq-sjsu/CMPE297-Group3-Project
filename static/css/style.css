@@ -447,6 +447,39 @@ input::placeholder { color: var(--text-muted); }
   min-height: 1.25em;
 }
 
+/* Go button loading state (additional info) --- */
+#additional-info-go {
+  position: relative;
+  min-width: 2.5rem;
+}
+#additional-info-go .go-btn-spinner {
+  display: none;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--border);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: go-spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+#additional-info-go.loading .go-btn-label {
+  visibility: hidden;
+}
+#additional-info-go.loading .go-btn-spinner {
+  display: inline-block;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  margin: -0.5rem 0 0 -0.5rem;
+}
+#additional-info-go.loading {
+  pointer-events: none;
+  opacity: 0.9;
+}
+@keyframes go-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Side panel (saved itineraries) --- */
 .side-panel {
   position: fixed;
@@ -540,6 +573,18 @@ main {
   transition: margin-right 0.2s ease;
 }
 
+/* Additional info bar (bottom) --- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 /* Footer --- */
 .site-footer {
   padding: 1rem 1.5rem;

@@ -105,6 +105,17 @@
               <div class="result-total-budget" id="result-total-budget"></div>
               <section class="result-flights" id="result-flights" aria-label="Flights"></section>
               <section class="result-days" id="result-days" aria-label="Daily itinerary"></section>
+              <div class="save-itinerary-section" id="additional-info-section">
+                <label for="additional-info-input">Additional information</label>
+                <div class="save-itinerary-row">
+                  <input type="text" id="additional-info-input" name="additional_info" placeholder="e.g. I want to visit the Eiffel Tower" maxlength="250" />
+                  <button type="button" class="btn btn-primary" id="additional-info-go" aria-busy="false">
+                  <span class="go-btn-label">Go</span>
+                  <span class="go-btn-spinner" aria-hidden="true"></span>
+                </button>
+                </div>
+                <span id="additional-info-msg" class="save-itinerary-msg" aria-live="polite"></span>
+              </div>
               <div class="save-itinerary-section" id="save-itinerary-section">
                 <label for="itinerary-name">Save this plan</label>
                 <div class="save-itinerary-row">

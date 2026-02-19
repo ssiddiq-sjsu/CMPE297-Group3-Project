@@ -3,6 +3,7 @@
 
   const BUDGET_DEFAULTS = { min: 500, max: 15000, step: 250 };
   let currentPlan = null;
+  let additionalInfo = "";
 
   function $(sel, el = document) {
     return el.querySelector(sel);
@@ -395,10 +396,53 @@
     if (saveBtn) saveBtn.addEventListener("click", saveItinerary);
   }
 
+  function setGoButtonLoading(loading) {
+    const goBtn = $("#additional-info-go");
+    if (!goBtn) return;
+    goBtn.disabled = loading;
+    goBtn.setAttribute("aria-busy", loading ? "true" : "false");
+    goBtn.classList.toggle("loading", loading);
+  }
+
+  function submitAdditionalInfo() {
+    const input = $("#additional-info-input");
+    const value = (input && input.value || "").trim();
+    additionalInfo = value;
+    if (!value) return;
+    setGoButtonLoading(true);
+    fetch("/api/additional-info", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ info: additionalInfo }),
+    })
+      .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+      .then(({ ok, data }) => {
+        if (ok && data.success && input) input.value = "";
+      })
+      .catch(console.error)
+      .finally(() => setGoButtonLoading(false));
+  }
+
+  function initAdditionalInfo() {
+    const input = $("#additional-info-input");
+    const goBtn = $("#additional-info-go");
+    if (input) {
+      input.addEventListener("input", () => { additionalInfo = input.value; });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitAdditionalInfo();
+        }
+      });
+    }
+    if (goBtn) goBtn.addEventListener("click", submitAdditionalInfo);
+  }
+
   function init() {
     initNavigation();
     initBudgetSlider();
     initForm();
+    initAdditionalInfo();
     loadAirports();
     loadDestinations();
   }
