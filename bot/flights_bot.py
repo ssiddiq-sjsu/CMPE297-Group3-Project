@@ -2,12 +2,14 @@
 Flight search agent using OpenAI Agents SDK and Amadeus.
 Reasons over origin, destination, dates, prefer_red_eyes, and budget; acts by querying
 Amadeus until it selects optimal flights and returns them via submit_optimal_flights.
+Session context is stored in the class for future calls.
 """
+import asyncio
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
-from agents import Agent, Runner, function_tool
+from agents import Agent, Runner, SQLiteSession, function_tool
 
 from .amadeus_flights import query_flights as amadeus_query_flights
 
@@ -94,6 +96,92 @@ FLIGHT_AGENT_INSTRUCTIONS = """You are a flight search agent. Given the user's o
 For a round trip, submit exactly two flights: first the outbound, then the return. You must call submit_optimal_flights when done; do not reply with only text."""
 
 
+def _clear_session_sync(session: SQLiteSession) -> None:
+    """Clear session from sync code (session.clear_session is async)."""
+    asyncio.run(session.clear_session())
+
+
+class FlightSearchAgent:
+    """
+    Stateful flight search agent. Stores an Agents API session so the same
+    conversation continues across calls. When search params change, session is cleared.
+    """
+
+    def __init__(self, session_id: str = "flight_search", db_path: Optional[str] = None) -> None:
+        self._session = SQLiteSession(session_id, db_path) if db_path else SQLiteSession(session_id)
+        self._search_params: Optional[dict[str, Any]] = None
+
+    def _current_search_key(
+        self,
+        origin_code: str,
+        destination: str,
+        departure_date: str,
+        return_date: str,
+        budget_max: float,
+    ) -> tuple:
+        return (
+            origin_code.strip(),
+            destination.strip(),
+            departure_date.strip(),
+            (return_date or "").strip(),
+            float(budget_max),
+        )
+
+    def run(
+        self,
+        origin_code: str,
+        destination: str,
+        departure_date: str,
+        return_date: str,
+        budget_max: float,
+        prefer_red_eyes: bool = False,
+        extra_info: str = "",
+    ) -> list[dict]:
+        """
+        Run the flight search agent using the stored session. Returns a list of flight dicts,
+        each with: home_airport, destination, departure_date (with time), arrival_date, cost,
+        airline, duration, flight_number.
+        """
+        key = self._current_search_key(origin_code, destination, departure_date, return_date, budget_max)
+        if self._search_params is None or self._search_params.get("_key") != key:
+            _clear_session_sync(self._session)
+            self._search_params = {
+                "_key": key,
+                "origin_code": origin_code,
+                "destination": destination,
+                "departure_date": departure_date,
+                "return_date": return_date,
+                "budget_max": budget_max,
+            }
+
+        chosen: list[dict] = []
+        submit_tool = _make_submit_tool(chosen)
+        agent = Agent(
+            name="Flight Search Agent",
+            instructions=FLIGHT_AGENT_INSTRUCTIONS,
+            tools=[query_amadeus_flights, submit_tool],
+        )
+
+        user_content = (
+            f"Search for flights with:\n"
+            f"- Origin (home airport): {origin_code}\n"
+            f"- Destination: {destination}\n"
+            f"- Departure date: {departure_date}\n"
+            f"- Return date: {return_date}\n"
+            f"- Prefer red-eye flights: {prefer_red_eyes}\n"
+            f"- Maximum budget (total): {budget_max}\n"
+            f"- Extra information: {extra_info or 'None'}\n\n"
+            "Use query_amadeus_flights to get options, then call submit_optimal_flights with your chosen flights."
+        )
+
+        Runner.run_sync(agent, user_content, session=self._session)
+
+        return chosen
+
+
+_default_agent = FlightSearchAgent()
+
+
 def run_agent(
     origin_code: str,
     destination: str,
@@ -109,26 +197,12 @@ def run_agent(
     Run the flight search agent. Returns a list of flight dicts, each with:
     home_airport, destination, departure_date (with time), arrival_date, cost, airline, duration, flight_number.
     """
-    chosen: list[dict] = []
-    submit_tool = _make_submit_tool(chosen)
-    agent = Agent(
-        name="Flight Search Agent",
-        instructions=FLIGHT_AGENT_INSTRUCTIONS,
-        tools=[query_amadeus_flights, submit_tool],
+    return _default_agent.run(
+        origin_code=origin_code,
+        destination=destination,
+        departure_date=departure_date,
+        return_date=return_date,
+        budget_max=float(budget_max),
+        prefer_red_eyes=prefer_red_eyes,
+        extra_info=extra_info or "",
     )
-
-    user_content = (
-        f"Search for flights with:\n"
-        f"- Origin (home airport): {origin_code}\n"
-        f"- Destination: {destination}\n"
-        f"- Departure date: {departure_date}\n"
-        f"- Return date: {return_date}\n"
-        f"- Prefer red-eye flights: {prefer_red_eyes}\n"
-        f"- Maximum budget (total): {budget_max}\n"
-        f"- Extra information: {extra_info or 'None'}\n\n"
-        "Use query_amadeus_flights to get options, then call submit_optimal_flights with your chosen flights."
-    )
-
-    Runner.run_sync(agent, user_content)
-
-    return chosen
