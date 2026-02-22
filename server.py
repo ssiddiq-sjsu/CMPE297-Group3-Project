@@ -120,10 +120,44 @@ def search_flights(
         return None
 
 
-def search_hotels(destination: str, check_in: str, check_out: str, budget_max: float):
-    """Search for hotels. Not implemented; returns placeholder."""
-    # TODO: Integrate hotel API
-    return None
+def search_hotels(
+    destination: str,
+    check_in: str,
+    check_out: str,
+    budget_max: float,
+    extra_info: str = "",
+):
+    """
+    Search for hotels via the hotel agent (OpenAI Agents SDK + Amadeus).
+    Returns a list of hotel dicts with name, description, cost, location, type, rating
+    (one per day, same hotel repeated), or None on failure.
+    """
+    try:
+        from bot.hotels_bot import run_agent as run_hotel_agent
+        hotels = run_hotel_agent(
+            destination=destination,
+            check_in=check_in,
+            check_out=check_out,
+            budget_max=float(budget_max),
+            extra_info=extra_info or "",
+        )
+        print("hotels: ", hotels)
+        if not hotels:
+            return None
+        # Server expects one hotel dict per day; we have one suggested hotel for the stay
+        raw = []
+        for h in hotels:
+            raw.append({
+                "name": h.get("name", "N/A"),
+                "description": f"Hotel (rating: {h.get('rating', 'N/A')})",
+                "cost": float(h.get("total", 0)),
+                "location": destination,
+                "type": "hotel",
+                "rating": h.get("rating"),
+            })
+        return raw
+    except Exception:
+        return None
 
 
 def search_activities(destination: str, activity_types: list[str], budget_max: float):
@@ -175,7 +209,7 @@ def build_trip_plan(trip_data: dict) -> dict:
     # - flight_number: str
     # None for no flights
     raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget, prefer_red_eyes=prefer_red_eyes)
-
+    # raw_flights = None
     # raw_hotels is a list of hotels for each day of the trip
     # each hotel is a dictionary with the following keys:
     # - name: str
@@ -234,7 +268,8 @@ def build_trip_plan(trip_data: dict) -> dict:
             daily_budget = 0
             d = dep_d + timedelta(days=i)
             date_str = d.isoformat()
-            raw_hotel = raw_hotels[i] if raw_hotels and i < len(raw_hotels) else None
+            # One suggested hotel is reused for all days when agent returns a single option
+            raw_hotel = raw_hotels[min(i, len(raw_hotels) - 1)] if raw_hotels else None
             raw_day_activities = raw_activities[i] if raw_activities and i < len(raw_activities) else None
             hotel_name = (raw_hotel.get("name") if isinstance(raw_hotel, dict) else raw_hotel) or "Hotel TBD"
             activity_list = list(raw_day_activities) if isinstance(raw_day_activities, list) else ["Activities TBD"]
