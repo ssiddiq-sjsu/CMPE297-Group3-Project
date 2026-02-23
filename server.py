@@ -20,6 +20,7 @@ SAVED_ITINERARIES = {}
 # Last plan and trip data for controller (so subsequent calls with extra_info get previous plan as context)
 LAST_PLAN = None
 LAST_TRIP_KEY = None
+LAST_TRIP_DATA = None
 PRESET_AIRPORTS = [
     {"code": "SFO", "name": "San Francisco (SFO)"},
     {"code": "LAX", "name": "Los Angeles (LAX)"},
@@ -169,19 +170,27 @@ def search_activities(destination: str, activity_types: list[str], budget_max: f
     return None
 
 
-def handle_additional_info(info: str) -> None:
+def handle_additional_info(info: str):
     """
-    Filler: process user-provided additional information (e.g. preferences, notes).
-    Called when the user submits the bottom textbox (Enter or Go).
+    Process user-provided additional information. If a plan has been created,
+    passes the info to the controller to update the plan and returns the new plan.
+    If no plan exists or update fails, returns None (and prints an error when no plan).
     """
-    # Placeholder: store or log; can be wired to trip context / LLM later
-    if info:
-        print(f"[additional info] {info}")
-
-    # fake a delay of 1 second
-    # button spins until the delay is over
-    import time
-    time.sleep(5)
+    if not info or not info.strip():
+        return None
+    global LAST_PLAN, LAST_TRIP_DATA
+    if LAST_PLAN is None or LAST_TRIP_DATA is None:
+        print("Error: No plan exists yet. Create a trip first before submitting additional info.")
+        return None
+    try:
+        from bot.controller_bot import run_controller
+        trip_data_with_info = {**LAST_TRIP_DATA, "extra_info": info.strip()}
+        plan = run_controller(LAST_PLAN, trip_data_with_info)
+        LAST_PLAN = plan
+        return plan
+    except Exception as e:
+        print("Error updating plan with additional info:", e)
+        return None
 
 
 
@@ -203,7 +212,7 @@ def build_trip_plan(trip_data: dict) -> dict:
     On first call current_plan is empty; on subsequent calls with same trip + extra_info
     the controller receives the previous plan and session context to update the plan.
     """
-    global LAST_PLAN, LAST_TRIP_KEY
+    global LAST_PLAN, LAST_TRIP_KEY, LAST_TRIP_DATA
     try:
         from bot.controller_bot import run_controller
         trip_key = _trip_key(trip_data)
@@ -211,6 +220,7 @@ def build_trip_plan(trip_data: dict) -> dict:
         plan = run_controller(current_plan, trip_data)
         LAST_PLAN = plan
         LAST_TRIP_KEY = trip_key
+        LAST_TRIP_DATA = trip_data
         return plan
     except Exception as e:
         print("error building trip plan: ", e)
@@ -384,11 +394,18 @@ def api_get_itinerary(name):
 
 @app.route("/api/additional-info", methods=["POST"])
 def api_additional_info():
-    """Accept additional info from the bottom textbox; calls handle_additional_info(info)."""
+    """Accept additional info; updates plan via controller and returns the new plan for the GUI."""
     data = request.get_json(force=True, silent=True) or {}
     info = (data.get("info") or "").strip()
-    handle_additional_info(info)
-    return jsonify({"success": True})
+    plan = handle_additional_info(info)
+    if plan is not None:
+        return jsonify({"success": True, "plan": plan})
+    if not info:
+        return jsonify({"success": True})
+    return jsonify({
+        "success": False,
+        "message": "No plan exists yet. Create a trip first before submitting additional info.",
+    }), 400
 
 
 def main():

@@ -417,9 +417,20 @@
     })
       .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
       .then(({ ok, data }) => {
-        if (ok && data.success && input) input.value = "";
+        if (ok && data.success && data.plan) {
+          renderPlan(data.plan);
+          if (input) input.value = "";
+        }
+        const msgEl = document.getElementById("additional-info-msg");
+        if (msgEl) {
+          msgEl.textContent = ok && data.success ? (data.plan ? "Plan updated." : "") : (data.message || "Request failed.");
+        }
       })
-      .catch(console.error)
+      .catch((err) => {
+        console.error(err);
+        const msgEl = document.getElementById("additional-info-msg");
+        if (msgEl) msgEl.textContent = "Request failed.";
+      })
       .finally(() => setGoButtonLoading(false));
   }
 
