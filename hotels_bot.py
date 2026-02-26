@@ -1,327 +1,229 @@
-from amadeus import Client
-from openai import OpenAI
-import re, json, time, random
-from datetime import datetime, timedelta
-import requests
+"""
+Hotel search agent using OpenAI Agents SDK and Amadeus hotel APIs.
+Stateful class: maintains an agent session so the same conversation continues
+across calls. Creates and returns a chosen hotel every run; uses fallback to
+Amadeus when the agent doesn't call submit. Session is preserved for future calls.
+"""
+import asyncio
+import json
+import os
+from typing import Any, Optional
 
-AMADEUS_CLIENT_ID = ""
-AMADEUS_CLIENT_SECRET = ""
-AMADEUS_BASE_URL = "https://test.api.amadeus.com"
+from agents import Agent, Runner, SQLiteSession, function_tool, WebSearchTool, ModelSettings
 
-# ---------- Clients ----------
-amadeus = Client(client_id=AMADEUS_CLIENT_ID, client_secret=AMADEUS_CLIENT_SECRET)
-openai_client = OpenAI()
+from amadeus_hotels import search_hotels_for_trip
 
-# ---------- Mappings ----------
-AIRPORT_TO_CITY_CODE = {
-    "JFK": "NYC", "LGA": "NYC", "EWR": "NYC",
-    "ORD": "CHI", "MDW": "CHI",
-    "DCA": "WAS", "IAD": "WAS", "BWI": "WAS",
-    "SFO": "SFO", "OAK": "SFO", "SJC": "SFO",
-    "DFW": "DFW", "DAL": "DFW",
-    "IAH": "HOU", "HOU": "HOU",
-    "MIA": "MIA", "FLL": "MIA", "PBI": "MIA",
-    "MCO": "ORL", "SFB": "ORL",
-}
+if not os.getenv("OPENAI_API_KEY"):
+    raise ValueError("OPENAI_API_KEY is not set")
 
-def resolve_hotel_city_code(destination_airport=None):
-    if destination_airport:
-        a = destination_airport.strip().upper()
-        return AIRPORT_TO_CITY_CODE.get(a, a)
-    return None
 
-# ---------- Flights (SDK) ----------
-def search_flights(origin, destination, date):
-    response = amadeus.shopping.flight_offers_search.get(
-        originLocationCode=origin,
-        destinationLocationCode=destination,
-        departureDate=date,
-        adults=1,
-        max=2
-    )
-    flights = []
-    for offer in (response.data or []):
-        flights.append({
-            "price": offer["price"]["total"],
-            "carrier": offer["itineraries"][0]["segments"][0]["carrierCode"],
-            "duration": offer["itineraries"][0]["duration"]
-        })
-    return flights
+# --- Function tools (Amadeus + submit) ---
 
-# ---------- Hotels (REST) ----------
-_token_cache = {"token": None, "expires_at": 0.0}
+@function_tool
+def query_amadeus_hotels(
+    destination: str,
+    check_in_date: str,
+    check_out_date: str,
+    max_budget: Optional[float] = None,
+    adults: int = 1,
+    max_hotels: int = 5,
+) -> str:
+    """Search Amadeus for hotel offers in a destination for the given dates.
 
-def amadeus_access_token():
-    now = time.time()
-    if _token_cache["token"] and now < _token_cache["expires_at"]:
-        return _token_cache["token"]
-
-    url = f"{AMADEUS_BASE_URL}/v1/security/oauth2/token"
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": AMADEUS_CLIENT_ID,
-        "client_secret": AMADEUS_CLIENT_SECRET,
-    }
-    r = requests.post(url, data=data, timeout=15)
-    r.raise_for_status()
-    payload = r.json()
-    _token_cache["token"] = payload["access_token"]
-    _token_cache["expires_at"] = now + int(payload.get("expires_in", 1800)) - 30
-    return _token_cache["token"]
-
-def amadeus_get(path, params=None, timeout=12, retries=2):
-    token = amadeus_access_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{AMADEUS_BASE_URL}{path}"
-
-    for attempt in range(retries + 1):
-        try:
-            r = requests.get(url, headers=headers, params=params, timeout=timeout)
-            if r.ok:
-                return r.json()
-
-            if 500 <= r.status_code < 600 and attempt < retries:
-                time.sleep((0.6 * (2 ** attempt)) + random.random() * 0.3)
-                continue
-
-            return {"_error": {"status": r.status_code, "body": r.text}, "data": []}
-
-        except requests.exceptions.ReadTimeout:
-            if attempt < retries:
-                time.sleep((0.6 * (2 ** attempt)) + random.random() * 0.3)
-                continue
-            return {"_error": {"status": "timeout", "body": f"ReadTimeout after {timeout}s"}, "data": []}
-
-        except requests.exceptions.RequestException as e:
-            return {"_error": {"status": "request_exception", "body": str(e)}, "data": []}
-
-def get_hotel_ids(city_code, max_ids=10):
-    resp = amadeus_get("/v1/reference-data/locations/hotels/by-city", params={
-        "cityCode": city_code,
-        "radius": 10,
-        "radiusUnit": "KM",
-        "hotelSource": "ALL",
-    }, timeout=10, retries=2)
-
-    if resp.get("_error"):
-        return []
-
-    ids = []
-    for h in (resp.get("data", []) or []):
-        if isinstance(h, dict) and h.get("hotelId"):
-            ids.append(h["hotelId"].strip())
-    return ids[:max_ids]
-
-def get_offers_for_hotel_ids(hotel_ids, check_in, check_out, adults=1, max_hotels=3):
-    if not hotel_ids:
-        return []
-
-    offers = amadeus_get("/v3/shopping/hotel-offers", params={
-        "hotelIds": ",".join([hid.strip() for hid in hotel_ids]),
-        "checkInDate": check_in,
-        "checkOutDate": check_out,
-        "adults": adults,
-        "roomQuantity": 1,
-        "bestRateOnly": "true",
-        "currency": "USD",
-    }, timeout=12, retries=2)
-
-    if offers.get("_error"):
-        return []
-
-    results = []
-    for entry in (offers.get("data", []) or []):
-        hotel = entry.get("hotel", {}) or {}
-        offer_list = entry.get("offers", []) or []
-        if not offer_list:
-            continue
-        offer = offer_list[0] or {}
-        price = offer.get("price", {}) or {}
-        results.append({
-            "hotelId": hotel.get("hotelId"),
-            "name": hotel.get("name"),
-            "rating": hotel.get("rating"),
-            "total": price.get("total"),
-            "currency": price.get("currency"),
-            "offerId": offer.get("id"),
-        })
-
-    def to_float(x):
-        try: return float(x)
-        except: return float("inf")
-    results.sort(key=lambda r: to_float(r.get("total")))
-    return results[:max_hotels]
-
-# ---------- OpenAI parsing ----------
-def parse_trip(user_input):
-    prompt = f"""
-        Extract flight search info from the text below.
-        
-        Rules:
-        - Use IATA airport codes (SFO, LAX, JFK, LAS, etc.)
-        - Convert relative dates like "next Monday" to YYYY-MM-DD
-        - Return ONLY valid JSON
-        
-        JSON format:
-        {{
-          "origin": "IATA or null",
-          "destination": "IATA or null",
-          "flight_date": "YYYY-MM-DD or null"
-        }}
-
+    Args:
+        destination: City name or IATA code (e.g. New York City, SFO, MIA).
+        check_in_date: Check-in date YYYY-MM-DD.
+        check_out_date: Check-out date YYYY-MM-DD.
+        max_budget: Optional maximum total price in USD for the stay.
+        adults: Number of adults (default 1).
+        max_hotels: Max number of hotel offers to return (default 5).
     """
-    response = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
+    print("\n\n calling query_amadeus_hotels")
+    offers = search_hotels_for_trip(
+        destination=destination,
+        check_in=check_in_date,
+        check_out=check_out_date,
+        adults=adults,
+        max_hotels=max_hotels,
     )
-    content = response.choices[0].message.content.strip()
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if not match:
-        return {"origin": None, "destination": None, "flight_date": None}
-    return json.loads(match.group())
+    if not offers:
+        return json.dumps({"offers": [], "message": "No hotel offers found for this destination and dates."})
+    # if max_budget is not None:
+    #     offers = [o for o in offers if (o.get("total") or 0) <= max_budget]
+    print("\n\nquery_amadeus_hotels offers: ", offers)
+    return json.dumps(offers, default=str)
 
-def default_hotel_dates(flight_date_str, nights=2):
-    d = datetime.fromisoformat(flight_date_str).date()
-    return d.isoformat(), (d + timedelta(days=nights)).isoformat()
 
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_hotel_ids_by_city",
-            "description": "Get valid Amadeus hotelIds for a given IATA city code (e.g., LAS, NYC, PAR).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city_code": {"type": "string", "description": "IATA city code, e.g. LAS, NYC"},
-                    "max_ids": {"type": "integer", "description": "Max hotelIds to return", "default": 10}
-                },
-                "required": ["city_code"]
-            }
+def _make_submit_tool(chosen: list[dict]) -> Any:
+    """Build submit_optimal_hotel tool that appends the chosen hotel to `chosen` (same run)."""
+
+    @function_tool
+    def submit_optimal_hotel(
+        hotel_id: str,
+        name: str,
+        total: float,
+        currency: str = "USD",
+        rating: Optional[str] = None,
+        offer_id: Optional[str] = None,
+    ) -> str:
+        """Call this when you have chosen the best hotel. Submit exactly one hotel. You must call this to complete the task.
+
+        Args:
+            hotel_id: Amadeus hotel ID.
+            name: Hotel name.
+            total: Total price for the stay.
+            currency: Currency code (default USD).
+            rating: Optional hotel rating.
+            offer_id: Optional Amadeus offer ID.
+        """
+        hotel = {
+            "hotelId": hotel_id,
+            "name": name,
+            "total": total,
+            "currency": currency,
+            "rating": rating,
+            "offerId": offer_id,
         }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_hotel_offers",
-            "description": "Get hotel offers/prices from Amadeus for provided hotelIds and dates.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "hotel_ids": {"type": "array", "items": {"type": "string"}, "description": "List of hotelIds like NZLAS105"},
-                    "check_in": {"type": "string", "description": "YYYY-MM-DD"},
-                    "check_out": {"type": "string", "description": "YYYY-MM-DD"},
-                    "adults": {"type": "integer", "default": 1},
-                    "max_hotels": {"type": "integer", "default": 3}
-                },
-                "required": ["hotel_ids", "check_in", "check_out"]
-            }
-        }
+        chosen.append(hotel)
+        return json.dumps({"status": "accepted", "hotel": hotel}, default=str)
+
+    return submit_optimal_hotel
+
+
+def _offer_to_hotel(o: dict) -> dict:
+    """Convert Amadeus offer dict to our hotel dict format."""
+    return {
+        "hotelId": o.get("hotelId"),
+        "name": o.get("name"),
+        "total": o.get("total"),
+        "currency": o.get("currency", "USD"),
+        "rating": o.get("rating"),
+        "offerId": o.get("offerId"),
     }
-]
 
-def run_tool_call(tc):
-    name = tc.function.name
-    args = json.loads(tc.function.arguments or "{}")
 
-    if name == "get_hotel_ids_by_city":
-        city_code = args["city_code"].strip().upper()
-        max_ids = int(args.get("max_ids", 10))
-        return {"city_code": city_code, "hotel_ids": get_hotel_ids(city_code, max_ids=max_ids)}
+HOTEL_AGENT_INSTRUCTIONS = """You are a hotel search agent. You must complete the following steps in order:
+1. Call query_amadeus_hotels to fetch hotel options (use the destination, check-in date, check-out date, and max_budget from the user message).
+2. From the results, pick the best hotel for the user (consider price, rating, and any preferences they gave).
+3. Call submit_optimal_hotel exactly once with that hotel's hotel_id, name, total, currency, and optionally rating and offer_id.
 
-    if name == "get_hotel_offers":
-        hotel_ids = [x.strip() for x in args.get("hotel_ids", []) if isinstance(x, str)]
-        check_in = args["check_in"]
-        check_out = args["check_out"]
-        adults = int(args.get("adults", 1))
-        max_hotels = int(args.get("max_hotels", 3))
-        return {"hotels": get_offers_for_hotel_ids(hotel_ids, check_in, check_out, adults=adults, max_hotels=max_hotels)}
+You are NOT done until you have called submit_optimal_hotel. Do not reply with only text. Always call submit_optimal_hotel with one hotel from the search results to finish."""
 
-    return {"error": f"Unknown tool: {name}"}
 
-# =========================
-# Chat Loop (flights first, then tools for hotels)
-# =========================
-print("Travel Chatbot (type 'exit' to quit)\n")
+def _clear_session_sync(session: SQLiteSession) -> None:
+    """Clear session from sync code (session.clear_session is async)."""
+    asyncio.run(session.clear_session())
 
-messages = [{
-    "role": "system",
-    "content": (
-        "You are a friendly travel consultant.\n"
-        "Rules:\n"
-        "- NEVER invent hotelIds. You must use tools to get hotelIds and hotel offers.\n"
-        "- Always show hotel prices when available.\n"
-        "- If hotel offers are empty, explain Amadeus sandbox may not return live prices.\n"
-    )
-}]
 
-while True:
-    user_input = input("You: ")
-    if user_input.lower() == "exit":
-        break
+class HotelSearchAgent:
+    """
+    Stateful hotel search agent. Keeps an Agents API session for future calls.
+    Each run returns a chosen hotel: either from the agent's submit_optimal_hotel call,
+    or (fallback) the best available offer from Amadeus when the agent doesn't submit.
+    """
 
-    trip = parse_trip(user_input)
-    messages.append({"role": "user", "content": user_input})
+    def __init__(self, session_id: str = "hotel_search", db_path: Optional[str] = None) -> None:
+        self._session = SQLiteSession(session_id, db_path) if db_path else SQLiteSession(session_id)
+        self._search_params: Optional[dict[str, Any]] = None
+        self._first_call = True
 
-    # If we have enough flight info, fetch flights + add hotel context for the model
-    if trip.get("origin") and trip.get("destination") and trip.get("flight_date"):
-        flights = search_flights(trip["origin"], trip["destination"], trip["flight_date"])
-        check_in, check_out = default_hotel_dates(trip["flight_date"], nights=2)
-        hotel_city = resolve_hotel_city_code(destination_airport=trip["destination"])
+    def _current_search_key(self, destination: str, check_in: str, check_out: str, budget_max: float) -> tuple:
+        return (destination.strip(), check_in.strip(), check_out.strip(), float(budget_max))
 
-        context = {
-            "trip": {
-                "origin": trip["origin"],
-                "destination_airport": trip["destination"],
-                "flight_date": trip["flight_date"],
-                "hotel_city_code": hotel_city,
+    def run(
+        self,
+        destination: str,
+        check_in: str,
+        check_out: str,
+        budget_max: float,
+        extra_info: str = "",
+    ) -> list[dict]:
+        """
+        Run the agent; return a list of one chosen hotel dict. Uses session for context.
+        If the agent does not call submit_optimal_hotel, falls back to the best Amadeus offer.
+        """
+        key = self._current_search_key(destination, check_in, check_out, budget_max)
+        if self._search_params is None or self._search_params.get("_key") != key:
+            _clear_session_sync(self._session)
+            self._search_params = {
+                "_key": key,
+                "destination": destination,
                 "check_in": check_in,
-                "check_out": check_out
-            },
-            "flights": flights
-        }
+                "check_out": check_out,
+                "budget_max": budget_max,
+            }
+            self._first_call = True
 
-        messages.append({
-            "role": "system",
-            "content": (
-                "Here is flight data and hotel search inputs.\n"
-                "Next steps:\n"
-                "1) Call get_hotel_ids_by_city using trip.hotel_city_code\n"
-                "2) Then call get_hotel_offers using the returned hotel_ids and trip.check_in/check_out\n\n"
-                + json.dumps(context, indent=2)
-            )
-        })
-
-    # First model call
-    resp = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-        temperature=0.3
-    )
-    msg = resp.choices[0].message
-    messages.append(msg)
-
-    # Handle tool calls until model stops calling tools
-    while getattr(msg, "tool_calls", None):
-        for tc in msg.tool_calls:
-            tool_result = run_tool_call(tc)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": json.dumps(tool_result)
-            })
-
-        resp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-            temperature=0.3
+        chosen: list[dict] = []
+        submit_tool = _make_submit_tool(chosen)
+        agent = Agent(
+            name="Hotel Search Agent",
+            model="gpt-4o",
+            model_settings=ModelSettings(tool_choice="auto"),
+            instructions=HOTEL_AGENT_INSTRUCTIONS,
+            tools=[query_amadeus_hotels, submit_tool],
         )
-        msg = resp.choices[0].message
-        messages.append(msg)
-    print("User:", user_input)
-    print("Bot:", msg.content)
+
+        if self._first_call:
+            user_content = (
+                f"Search for hotels with:\n"
+                f"- Destination: {destination}\n"
+                f"- Check-in date: {check_in}\n"
+                f"- Check-out date: {check_out}\n"
+                f"- Maximum budget (total for stay): {budget_max}\n"
+                f"- Extra preferences: {extra_info or 'None'}\n\n"
+                "Call query_amadeus_hotels, then pick the best hotel and call submit_optimal_hotel with it. You must call submit_optimal_hotel to complete the task."
+            )
+            self._first_call = False
+        else:
+            user_content = (
+                f"User's additional preferences: {extra_info or 'None'}\n\n"
+                "Using the same destination, dates, and budget, search again and call submit_optimal_hotel with a hotel that fits these preferences. You must call submit_optimal_hotel to complete the task."
+            )
+
+        a = Runner.run_sync(agent, user_content, session=self._session)
+
+        print("runner response:", a)
+        print("chosen: ", chosen)
+
+        # Fallback: if agent didn't submit, pick best offer from Amadeus and return it
+        # if not chosen:
+        #     offers = search_hotels_for_trip(
+        #         destination=destination,
+        #         check_in=check_in,
+        #         check_out=check_out,
+        #         adults=1,
+        #         max_hotels=5,
+        #     )
+        #     if offers and budget_max is not None and budget_max > 0:
+        #         offers = [o for o in offers if (o.get("total") or 0) <= budget_max]
+        #     if offers:
+        #         chosen = [_offer_to_hotel(offers[0])]
+
+        return chosen
+
+
+_default_agent = HotelSearchAgent()
+
+
+def run_agent(
+    destination: str,
+    check_in: str,
+    check_out: str,
+    budget_max: float = 0,
+    extra_info: str = "",
+    model: str = "gpt-4o",
+    max_turns: int = 15,
+    max_budget: float = None,  # Add this parameter
+) -> list[dict]:
+    """Run the stateful hotel agent; returns a list of one hotel dict."""
+    # Use max_budget if provided, otherwise use budget_max
+    effective_budget = max_budget if max_budget is not None else budget_max
+    
+    return _default_agent.run(
+        destination=destination,
+        check_in=check_in,
+        check_out=check_out,
+        budget_max=float(effective_budget),
+        extra_info=extra_info or "",
+    )
