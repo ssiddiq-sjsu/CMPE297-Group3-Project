@@ -1,22 +1,55 @@
 """
 Amadeus flight search: resolve city to IATA and query flight offers.
-Uses AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET (or AMADEUS_API_KEY as client_id) from env.
+Uses AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET from env.
 """
 import os
 import re
 from datetime import datetime
+from typing import List, Dict, Any, Optional
 
-from amadeus import Client
+from amadeus import Client, ResponseError
+from airline_codes import resolve_airline_code, get_airline_with_code
 
-# Create client from env (API Key = client_id, API Secret = client_secret)
+# City name to IATA code mappings (fallback if API fails)
+CITY_TO_IATA_FALLBACK = {
+    "new york": "NYC",
+    "new york city": "NYC",
+    "nyc": "NYC",
+    "los angeles": "LAX",
+    "chicago": "CHI",
+    "san francisco": "SFO",
+    "miami": "MIA",
+    "boston": "BOS",
+    "washington": "WAS",
+    "washington d.c.": "WAS",
+    "seattle": "SEA",
+    "las vegas": "LAS",
+    "orlando": "ORL",
+    "denver": "DEN",
+    "atlanta": "ATL",
+    "dallas": "DFW",
+    "houston": "HOU",
+    "philadelphia": "PHL",
+    "san diego": "SAN",
+    "vancouver": "YVR",
+    "toronto": "YTO",
+    "montreal": "YMQ",
+}
+
+# Create client from env
 _client_id = os.getenv("AMADEUS_CLIENT_ID")
 _client_secret = os.getenv("AMADEUS_SECRET")
+
 if not _client_id or not _client_secret:
     _amadeus = None
-    print("amadeus not initialized")
+    print("⚠️ Amadeus not initialized - missing credentials")
 else:
-    _amadeus = Client(client_id=_client_id, client_secret=_client_secret)
-    print("amadeus initialized")
+    try:
+        _amadeus = Client(client_id=_client_id, client_secret=_client_secret)
+        print("✅ Amadeus flight client initialized")
+    except Exception as e:
+        _amadeus = None
+        print(f"❌ Amadeus initialization error: {e}")
 
 
 def _parse_duration(iso_duration: str) -> str:
@@ -26,7 +59,8 @@ def _parse_duration(iso_duration: str) -> str:
     m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?", iso_duration)
     if not m:
         return iso_duration
-    h, mn = int(m.group(1) or 0), int(m.group(2) or 0)
+    h = int(m.group(1) or 0)
+    mn = int(m.group(2) or 0)
     parts = []
     if h:
         parts.append(f"{h}h")
@@ -35,85 +69,151 @@ def _parse_duration(iso_duration: str) -> str:
     return " ".join(parts) if parts else "0m"
 
 
-def _normalize_offer(offer: dict, origin_code: str, dest_code: str, direction: str) -> dict:
+def _normalize_offer(offer: dict, origin_code: str, dest_code: str, direction: str) -> Optional[Dict[str, Any]]:
     """Turn one Amadeus flight offer into a single flight dict for the agent."""
-    if not offer or not offer.get("itineraries"):
-        return None
-    itin = offer["itineraries"][0]
-    segs = itin.get("segments") or []
-    if not segs:
-        return None
-    seg = segs[0]
-    dep = seg.get("departure") or {}
-    arr = seg.get("arrival") or {}
-    dep_at = dep.get("at", "")
-    arr_at = arr.get("at", "")
-    # Format datetimes for display (keep ISO if needed for API)
     try:
-        dep_dt = datetime.fromisoformat(dep_at.replace("Z", "+00:00")) if dep_at else None
-        arr_dt = datetime.fromisoformat(arr_at.replace("Z", "+00:00")) if arr_at else None
-        dep_str = dep_dt.strftime("%Y-%m-%d %H:%M") if dep_dt else dep_at or "N/A"
-        arr_str = arr_dt.strftime("%Y-%m-%d %H:%M") if arr_dt else arr_at or "N/A"
-    except (ValueError, TypeError):
-        dep_str = dep_at or "N/A"
-        arr_str = arr_at or "N/A"
-    duration = _parse_duration(itin.get("duration", ""))
-    carrier = seg.get("carrierCode", "")
-    number = seg.get("number", "")
-    flight_number = f"{carrier}{number}" if carrier or number else "N/A"
-    price = float((offer.get("price") or {}).get("total", 0))
-    return {
-        "home_airport": origin_code,
-        "destination": dest_code,
-        "departure_date": dep_str,
-        "arrival_date": arr_str,
-        "return_date": dep_str if direction == "return" else arr_str,
-        "cost": price,
-        "airline": carrier or "N/A",
-        "duration": duration,
-        "flight_number": flight_number,
-        "direction": direction,
-    }
+        if not offer or not offer.get("itineraries"):
+            return None
+        
+        itin = offer["itineraries"][0]
+        segs = itin.get("segments") or []
+        if not segs:
+            return None
+            
+        seg = segs[0]
+        dep = seg.get("departure") or {}
+        arr = seg.get("arrival") or {}
+        dep_at = dep.get("at", "")
+        arr_at = arr.get("at", "")
+        
+        # Format datetimes for display
+        try:
+            dep_dt = datetime.fromisoformat(dep_at.replace("Z", "+00:00")) if dep_at else None
+            arr_dt = datetime.fromisoformat(arr_at.replace("Z", "+00:00")) if arr_at else None
+            dep_str = dep_dt.strftime("%Y-%m-%d %H:%M") if dep_dt else dep_at or "N/A"
+            arr_str = arr_dt.strftime("%Y-%m-%d %H:%M") if arr_dt else arr_at or "N/A"
+        except (ValueError, TypeError):
+            dep_str = dep_at or "N/A"
+            arr_str = arr_at or "N/A"
+            
+        duration = _parse_duration(itin.get("duration", ""))
+        carrier_code = seg.get("carrierCode", "")
+        number = seg.get("number", "")
+        
+        # Resolve airline code to full name
+        airline_name = resolve_airline_code(carrier_code)
+        flight_number = f"{carrier_code}{number}" if carrier_code or number else "N/A"
+        
+        # Extract price safely
+        price_dict = offer.get("price") or {}
+        total_str = price_dict.get("total", "0")
+        try:
+            price = float(total_str)
+        except (ValueError, TypeError):
+            price = 0.0
+            
+        return {
+            "home_airport": origin_code,
+            "destination": dest_code,
+            "departure_date": dep_str,
+            "arrival_date": arr_str,
+            "return_date": arr_str if direction == "return" else None,
+            "cost": price,
+            "airline": airline_name,  # Now using full name
+            "airline_code": carrier_code,  # Keep original code
+            "flight_number": flight_number,
+            "duration": duration,
+            "direction": direction,
+        }
+    except Exception as e:
+        print(f"Error normalizing flight offer: {e}")
+        return None
 
 
-def city_to_iata(city: str) -> str | None:
+def city_to_iata(city: str) -> Optional[str]:
     """Resolve a city name to an IATA airport/city code using Amadeus."""
-    if not _amadeus:
-        print("amadeus not initialized")
+    if not city:
         return None
+    
+    # First check fallback dictionary (faster and more reliable)
+    city_lower = city.lower().strip()
+    if city_lower in CITY_TO_IATA_FALLBACK:
+        print(f"✅ Using fallback: {city} → {CITY_TO_IATA_FALLBACK[city_lower]}")
+        return CITY_TO_IATA_FALLBACK[city_lower]
+    
+    if not _amadeus:
+        print("⚠️ Amadeus not initialized, using fallback only")
+        # Try fallback even without API
+        for key, value in CITY_TO_IATA_FALLBACK.items():
+            if key in city_lower:
+                return value
+        return None
+        
     try:
+        # Try with CITY subtype first (more likely to get city code)
         res = _amadeus.reference_data.locations.get(
             keyword=city,
-            subType="AIRPORT,CITY",
-        ) 
-        if not res.data:
-            print("no data in city_to_iata")
-            return None
-        print("city_to_iata result: ", res.data[0].get("iataCode"))
+            subType="CITY",
+        )
+        
         if res.data and len(res.data) > 0:
-            return res.data[0].get("iataCode")
+            iata_code = res.data[0].get("iataCode")
+            print(f"✅ Resolved {city} → {iata_code} (via CITY)")
+            return iata_code
+        
+        # If no cities found, try AIRPORT
+        res = _amadeus.reference_data.locations.get(
+            keyword=city,
+            subType="AIRPORT",
+        )
+        
+        if res.data and len(res.data) > 0:
+            iata_code = res.data[0].get("iataCode")
+            print(f"✅ Resolved {city} → {iata_code} (via AIRPORT)")
+            return iata_code
+            
+        print(f"No data found for city: {city}")
+        return None
+        
+    except ResponseError as e:
+        print(f"Amadeus API error in city_to_iata: {e}")
+        # Try fallback as last resort
+        for key, value in CITY_TO_IATA_FALLBACK.items():
+            if key in city_lower:
+                return value
+        return None
     except Exception as e:
-        print("error in city_to_iata: ", e)
-        pass
-    return None
+        print(f"Unexpected error in city_to_iata: {e}")
+        return None
 
 
-def search_flights(origin_iata: str, destination_iata: str, date: str):
-    """One-way flight offers search. Returns raw Amadeus response.data or []."""
+def search_flights(origin_iata: str, destination_iata: str, date: str) -> List[Dict[str, Any]]:
+    """One-way flight offers search. Returns list of raw offers or empty list."""
     if not _amadeus:
-        print("amadeus not initialized")
+        print("⚠️ Amadeus not initialized")
         return []
+        
+    if not all([origin_iata, destination_iata, date]):
+        print("Missing required parameters for flight search")
+        return []
+        
     try:
+        print(f"🔍 Searching flights: {origin_iata} → {destination_iata} on {date}")
         response = _amadeus.shopping.flight_offers_search.get(
             originLocationCode=origin_iata,
             destinationLocationCode=destination_iata,
             departureDate=date,
             adults=1,
-            max=5,
+            max=10,
         )
-        print("search_flights result: ", response.data)
+        print(f"Found {len(response.data)} flights")
         return response.data or []
-    except Exception:
+        
+    except ResponseError as e:
+        print(f"Amadeus API error in search_flights: {e}")
+        return []
+    except Exception as e:
+        print(f"Unexpected error in search_flights: {e}")
         return []
 
 
@@ -121,56 +221,99 @@ def query_flights(
     origin_code: str,
     destination: str,
     departure_date: str,
-    return_date: str | None = None,
+    return_date: Optional[str] = None,
     prefer_red_eyes: bool = False,
-    max_price: float | None = None,
-) -> list[dict]:
+    max_price: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     """
     Query Amadeus for flight offers (outbound and optionally return).
-    destination can be IATA code or city name (resolved via city_to_iata).
-    Returns a list of normalized flight dicts, each with:
-    home_airport, destination, departure_date (with time), arrival_date, cost, airline, duration, flight_number, direction.
+    Returns a list of normalized flight dicts.
     """
     if not _amadeus:
-        print("amadeus not initialized")
+        print("⚠️ Amadeus not initialized")
         return []
-    print("\n\nquery_flights with arguments: ", origin_code, destination, departure_date, return_date, prefer_red_eyes, max_price)
-    dest_iata = destination if len(destination) == 3 and destination.isupper() else city_to_iata(destination)
-    print("\n\ndest_iata: ", dest_iata)
-    if not dest_iata:
-        dest_iata = destination
-    outbound_raw = search_flights(origin_code, dest_iata, departure_date)
-    print("outbound_raw: ", outbound_raw)
+        
+    print(f"\n🔍 Querying flights: {origin_code} → {destination} on {departure_date}")
+    
+    # Resolve origin if needed
+    origin_iata = origin_code
+    if not (len(origin_code) == 3 and origin_code.isupper()):
+        resolved = city_to_iata(origin_code)
+        if resolved:
+            origin_iata = resolved
+        else:
+            print(f"Could not resolve origin: {origin_code}")
+            return []
+    
+    # Resolve destination to IATA if it's a city name
+    dest_iata = destination
+    if not (len(destination) == 3 and destination.isupper()):
+        resolved = city_to_iata(destination)
+        if resolved:
+            dest_iata = resolved
+        else:
+            print(f"Could not resolve destination: {destination}")
+            return []
+    
+    # Search outbound flights
+    outbound_raw = search_flights(origin_iata, dest_iata, departure_date)
+    
     flights = []
+    
+    # Process outbound flights
     for offer in outbound_raw:
-        if max_price is not None and float((offer.get("price") or {}).get("total", 0)) > max_price:
-            continue
-        f = _normalize_offer(offer, origin_code, dest_iata, "outbound")
+        if max_price is not None:
+            price_dict = offer.get("price") or {}
+            total_str = price_dict.get("total", "0")
+            try:
+                price = float(total_str)
+                if price > max_price:
+                    continue
+            except (ValueError, TypeError):
+                pass
+                
+        f = _normalize_offer(offer, origin_iata, dest_iata, "outbound")
         if f:
             flights.append(f)
+    
+    # Search return flights if requested
     if return_date:
-        return_raw = search_flights(dest_iata, origin_code, return_date)
+        return_raw = search_flights(dest_iata, origin_iata, return_date)
+        
         for offer in return_raw:
-            if max_price is not None and float((offer.get("price") or {}).get("total", 0)) > max_price:
-                continue
-            f = _normalize_offer(offer, dest_iata, origin_code, "return")
+            if max_price is not None:
+                price_dict = offer.get("price") or {}
+                total_str = price_dict.get("total", "0")
+                try:
+                    price = float(total_str)
+                    if price > max_price:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                    
+            f = _normalize_offer(offer, dest_iata, origin_iata, "return")
             if f:
                 flights.append(f)
-    if prefer_red_eyes:
-        # Prefer departures between 21:00 and 05:00 (next day) local; we don't have timezone here, so sort by dep time string
+    
+    # Apply red-eye preference if requested
+    if prefer_red_eyes and flights:
         def red_eye_score(flight):
             dep = flight.get("departure_date", "") or ""
             if " " in dep:
                 try:
                     t = datetime.strptime(dep.split(" ")[1][:5], "%H:%M")
                     h = t.hour + t.minute / 60
+                    # Red-eye flights are between 9 PM and 5 AM
                     if h >= 21 or h < 5:
-                        return 0
-                    return 1
+                        return 0  # Preferred
+                    return 1  # Not preferred
                 except ValueError:
                     pass
             return 1
-        flights.sort(key=lambda x: (red_eye_score(x), x.get("cost", 0)))
+            
+        flights.sort(key=lambda x: (red_eye_score(x), x.get("cost", float('inf'))))
     else:
-        flights.sort(key=lambda x: x.get("cost", 0))
+        flights.sort(key=lambda x: x.get("cost", float('inf')))
+    
+    print(f"Returning {len(flights)} normalized flights")
     return flights

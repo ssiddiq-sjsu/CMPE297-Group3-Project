@@ -1,36 +1,35 @@
 """
-Streamlit GUI for Travel Orchestrator with Chat Interface
-
-Users can:
-- View initial trip plan
-- Ask questions about the current plan
-- Request modifications that trigger re-optimization
-- View detailed optimization journey when debug is enabled
-- Save and load past trips from history
-- Get AI commentary and recommendations
-- Control total optimization attempts via slider
-- Change budget to specific amounts via chat
-- Change strategy via chat
-- Combine multiple changes in one message
+Streamlit GUI for Travel Orchestrator - True Hybrid Architecture
+- Deterministic optimization backend
+- LLM-powered conversational frontend
+- Natural language responses with full context
 """
 
 import streamlit as st
-import pandas as pd
 from datetime import datetime, timedelta
 import json
 import os
 import re
+import time
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
 
-# Import your existing modules
-from overarching_bot import run_overarching_bot, Strategy
-from flights_bot import run_agent as run_flights_agent
-from hotels_bot import run_agent as run_hotels_agent
+# Import orchestrator
+from overarching_bot import plan_trip, Strategy, parse_user_input
+from airline_codes import get_airline_with_code, resolve_airline_code
 
-# Page configuration
+# Initialize OpenAI client (for chat only)
+client = OpenAI(timeout=30.0)
+
+# Constants
+MAX_CHAT_HISTORY = 50
+API_TIMEOUT = 30
+RATE_LIMIT_SECONDS = 2
+
+# Page config
 st.set_page_config(
     page_title="AI Travel Planner",
     page_icon="✈️",
@@ -39,585 +38,23 @@ st.set_page_config(
 )
 
 # ==========================================================
-# CHAT PROCESSING FUNCTIONS - DEFINED FIRST
+# CUSTOM CSS (keep your existing CSS)
 # ==========================================================
-
-def process_chat_message(message: str, current_result: dict, search_params: dict) -> dict:
-    """Process user chat message and return appropriate response."""
-    
-    message_lower = message.lower()
-    
-    # Check for recommendation requests first
-    recommendation_keywords = ['cheaper hotel', 'better hotel', 'cheaper flight', 'direct flight', 
-                              'red-eye', 'upgrade', 'recommend', 'suggestion']
-    if any(keyword in message_lower for keyword in recommendation_keywords):
-        return handle_recommendation_request(message_lower, current_result, search_params)
-    
-    # Check for modification requests
-    if is_modification_request(message_lower):
-        return handle_modification_request(message_lower, search_params)
-    
-    # Otherwise handle as Q&A
-    return answer_question(message_lower, current_result, search_params)
-
-
-def is_modification_request(message: str) -> bool:
-    """Determine if the message is requesting a plan modification."""
-    modification_keywords = [
-        'cheaper', 'expensive', 'better', 'different', 'change',
-        'increase', 'decrease', 'raise', 'lower', 'adjust',
-        'modify', 'update', 'red-eye', 'red eye', 'overnight',
-        'budget', 'price', 'cost', 'more', 'less', 'strategy',
-        'splurge', 'cheapest'
-    ]
-    return any(keyword in message for keyword in modification_keywords)
-
-
-def handle_modification_request(message: str, search_params: dict) -> dict:
-    """Handle modification requests by updating search parameters.
-       Can handle multiple changes in one message (budget + strategy + preference)."""
-    
-    response = {
-        "type": "modification", 
-        "message": "", 
-        "budget": None, 
-        "preference": None, 
-        "strategy": None
-    }
-    
-    message_lower = message.lower()
-    changes_made = []
-    
-    # === STRATEGY DETECTION ===
-    if 'cheapest overall' in message_lower or 'cheapest' in message_lower:
-        response['strategy'] = 'cheapest_overall'
-        changes_made.append("strategy changed to Cheapest Overall")
-        
-    elif 'splurge on flights' in message_lower or 'splurge flight' in message_lower or 'more on flights' in message_lower:
-        response['strategy'] = 'splurge_flight'
-        changes_made.append("strategy changed to Splurge on Flights")
-        
-    elif 'splurge on hotel' in message_lower or 'splurge hotel' in message_lower or 'more on hotel' in message_lower:
-        response['strategy'] = 'splurge_hotel'
-        changes_made.append("strategy changed to Splurge on Hotel")
-    
-    # === BUDGET DETECTION - Specific dollar amount ===
-    amount_match = re.search(r'\$?\s*(\d+)(?:\s* dollars?)?', message)
-    if amount_match:
-        # Check if it's a budget change (contains budget-related words)
-        if any(word in message_lower for word in ['budget', 'increase', 'set', 'change', 'to', 'spend', 'total']):
-            new_budget = float(amount_match.group(1))
-            response['budget'] = new_budget
-            changes_made.append(f"budget set to ${new_budget:.0f}")
-    
-    # === BUDGET DETECTION - Percentage based (only if no specific amount found) ===
-    if response['budget'] is None:
-        if 'cheaper' in message_lower or 'lower budget' in message_lower or 'less' in message_lower:
-            current_budget = search_params.get('total_budget', 1500)
-            new_budget = current_budget * 0.8
-            response['budget'] = new_budget
-            changes_made.append(f"budget reduced to ${new_budget:.0f}")
-            
-        elif 'more expensive' in message_lower or 'higher budget' in message_lower or 'increase' in message_lower:
-            current_budget = search_params.get('total_budget', 1500)
-            new_budget = current_budget * 1.2
-            response['budget'] = new_budget
-            changes_made.append(f"budget increased to ${new_budget:.0f}")
-    
-    # === PREFERENCE DETECTION ===
-    if 'red-eye' in message_lower or 'red eye' in message_lower or 'overnight' in message_lower:
-        if 'prefer' in message_lower or 'yes' in message_lower or 'true' in message_lower or 'want' in message_lower:
-            response['preference'] = True
-            changes_made.append("red-eye flights preferred")
-        elif 'avoid' in message_lower or 'no' in message_lower or 'false' in message_lower:
-            response['preference'] = False
-            changes_made.append("red-eye flights avoided")
-    
-    # === DATE MODIFICATIONS ===
-    if 'different date' in message_lower or 'change date' in message_lower:
-        response['message'] = "Please use the date pickers above to change your travel dates."
-        return response
-    
-    # === BUILD RESPONSE MESSAGE ===
-    if changes_made:
-        if len(changes_made) == 1:
-            response['message'] = f"🔄 {changes_made[0].capitalize()}. Searching again..."
-        else:
-            # Combine multiple changes
-            changes_text = ", ".join(changes_made[:-1]) + " and " + changes_made[-1]
-            response['message'] = f"🔄 {changes_text.capitalize()}. Searching again..."
-    else:
-        response['message'] = "I can help you modify your trip. Try asking for 'increase budget to $2000' or 'switch to splurge on flights'."
-    
-    return response
-
-
-def handle_recommendation_request(message: str, current_result: dict, search_params: dict) -> dict:
-    """Handle requests for recommendations (cheaper hotel, better flight, etc.)"""
-    
-    response = {"type": "recommendation", "message": "", "action": None, "params": {}}
-    
-    # Cheaper hotel recommendation
-    if 'cheaper hotel' in message or 'cheaper accommodation' in message:
-        current_hotel = current_result.get('hotel', {})
-        if current_hotel and isinstance(current_hotel, dict):
-            current_hotel_cost = current_hotel.get('cost', 0)
-            if current_hotel_cost > 0:
-                target_budget = current_hotel_cost * 0.8  # 20% cheaper
-                response['action'] = 'search_hotels'
-                response['params'] = {'max_budget': target_budget}
-                response['message'] = f"Looking for hotels under ${target_budget:.0f} (20% cheaper than current)..."
-            else:
-                response['message'] = "No hotel in current plan to compare. Try searching for a new trip first."
-        else:
-            response['message'] = "No hotel in current plan. Try searching for a new trip first."
-    
-    # Better hotel recommendation
-    elif 'better hotel' in message or 'nicer hotel' in message or 'upgrade hotel' in message:
-        current_hotel = current_result.get('hotel', {})
-        if current_hotel and isinstance(current_hotel, dict):
-            current_hotel_cost = current_hotel.get('cost', 0)
-            remaining = current_result.get('remaining_budget', 0)
-            if remaining > 0:
-                target_budget = current_hotel_cost + (remaining * 0.5)  # Use half remaining budget
-                response['action'] = 'search_hotels'
-                response['params'] = {'max_budget': target_budget, 'min_rating': 4}
-                response['message'] = f"Looking for better hotels up to ${target_budget:.0f}..."
-            else:
-                response['message'] = "You don't have remaining budget for a hotel upgrade. Try increasing your total budget first."
-        else:
-            response['message'] = "No hotel in current plan. Try searching for a new trip first."
-    
-    # Cheaper flights recommendation
-    elif 'cheaper flight' in message:
-        current_flights = current_result.get('flights', [])
-        if current_flights:
-            current_flight_costs = [f.get('cost', 0) for f in current_flights]
-            total_flight_cost = sum(current_flight_costs)
-            target_budget = total_flight_cost * 0.8  # 20% cheaper
-            response['action'] = 'search_flights'
-            response['params'] = {'max_budget': target_budget}
-            response['message'] = f"Looking for flights under ${target_budget:.0f} total..."
-        else:
-            response['message'] = "No flights in current plan. Try searching for a new trip first."
-    
-    # Direct flights recommendation
-    elif 'direct flight' in message or 'non-stop' in message:
-        response['action'] = 'search_flights'
-        response['params'] = {'prefer_direct': True}
-        response['message'] = "Searching for direct flight options..."
-    
-    # Red-eye recommendation
-    elif 'red-eye' in message or 'overnight' in message:
-        response['action'] = 'search_flights'
-        response['params'] = {'prefer_red_eyes': True}
-        response['message'] = "Looking for red-eye flight options..."
-    
-    # Budget increase recommendation
-    elif 'increase budget' in message or 'more budget' in message:
-        current_budget = search_params.get('total_budget', 1500)
-        new_budget = current_budget * 1.2  # 20% increase
-        response['action'] = 'adjust_budget'
-        response['params'] = {'new_budget': new_budget}
-        response['message'] = f"Increasing budget to ${new_budget:.0f} to find better options..."
-    
-    # General recommendation
-    elif 'recommend' in message or 'suggestion' in message:
-        budget_usage = (current_result.get('total_cost', 0) / search_params.get('total_budget', 1)) * 100
-        if budget_usage < 60:
-            response['message'] = "You're well under budget! I recommend upgrading to a better hotel or splurging on direct flights."
-        elif budget_usage < 80:
-            response['message'] = "You have some room in your budget. Consider a slightly nicer hotel or better flight times."
-        elif budget_usage < 95:
-            response['message'] = "You're close to budget. I can help find cheaper options if you'd like."
-        else:
-            response['message'] = "You're at your budget limit. Try asking for 'cheaper flights' or 'cheaper hotels' to save money."
-    
-    return response
-
-
-def answer_question(message: str, current_result: dict, search_params: dict) -> dict:
-    """Answer questions about the current trip plan."""
-    
-    flights = current_result.get('flights', [])
-    hotel = current_result.get('hotel', {})
-    if not isinstance(hotel, dict):
-        hotel = {}
-    total_cost = current_result.get('total_cost', 0)
-    
-    # Flight questions
-    if 'flight' in message:
-        if not flights:
-            return {"type": "answer", "message": "No flights in the current plan."}
-        
-        if 'how long' in message or 'duration' in message:
-            if len(flights) >= 1:
-                duration = flights[0].get('duration', 'N/A')
-                return {"type": "answer", "message": f"The outbound flight duration is {duration}."}
-        
-        elif 'time' in message or 'depart' in message:
-            if len(flights) >= 1:
-                dep_time = flights[0].get('departure_date', 'N/A')
-                return {"type": "answer", "message": f"The outbound flight departs at {dep_time}."}
-        
-        elif 'airline' in message:
-            if len(flights) >= 1:
-                airline = flights[0].get('airline', 'Unknown')
-                return {"type": "answer", "message": f"The airline is {airline}."}
-        
-        elif 'cost' in message or 'price' in message:
-            if len(flights) >= 1:
-                cost = flights[0].get('cost', 0)
-                return {"type": "answer", "message": f"The outbound flight costs ${cost:.2f}."}
-    
-    # Hotel questions
-    elif 'hotel' in message:
-        if not hotel or not isinstance(hotel, dict) or not hotel.get('name'):
-            return {"type": "answer", "message": "No hotel in the current plan."}
-        
-        if 'name' in message:
-            name = hotel.get('name', 'Unknown')
-            return {"type": "answer", "message": f"The hotel is {name}."}
-        
-        elif 'rating' in message:
-            rating = hotel.get('rating', 'N/A')
-            return {"type": "answer", "message": f"The hotel rating is {rating}."}
-        
-        elif 'cost' in message or 'price' in message:
-            cost = hotel.get('cost', 0)
-            return {"type": "answer", "message": f"The hotel costs ${cost:.2f}."}
-    
-    # Budget questions
-    elif 'budget' in message or 'cost' in message or 'total' in message:
-        return {"type": "answer", "message": f"The total trip cost is ${total_cost:.2f}."}
-    
-    # Date questions
-    elif 'date' in message or 'when' in message:
-        dep = search_params.get('departure_date', 'N/A')
-        ret = search_params.get('return_date', 'N/A')
-        return {"type": "answer", "message": f"You depart on {dep} and return on {ret}."}
-    
-    # Destination questions
-    elif 'where' in message or 'destination' in message:
-        dest = search_params.get('destination', 'N/A')
-        return {"type": "answer", "message": f"Your destination is {dest}."}
-    
-    # Strategy questions
-    elif 'strategy' in message:
-        strategy = search_params.get('strategy', 'cheapest_overall')
-        strategy_display = {
-            'cheapest_overall': 'Cheapest Overall',
-            'splurge_flight': 'Splurge on Flights',
-            'splurge_hotel': 'Splurge on Hotel'
-        }.get(strategy, 'Cheapest Overall')
-        return {"type": "answer", "message": f"Your current strategy is {strategy_display}."}
-    
-    # Help message
-    elif 'help' in message or 'what can' in message:
-        return {
-            "type": "answer", 
-            "message": "You can ask me about flights, hotels, costs, dates, or request changes like:\n" +
-                      "• 'increase budget to $2000'\n" +
-                      "• 'switch to splurge on flights'\n" +
-                      "• 'set budget to 1800 and use cheapest overall'\n" +
-                      "• 'find cheaper flights'\n" +
-                      "• 'better hotels'\n" +
-                      "• 'any recommendations?'"
-        }
-    
-    # Default response
-    return {
-        "type": "answer",
-        "message": "I'm not sure how to help with that. Try asking about flights, hotels, costs, or request changes like 'increase budget to $2000'."
-    }
-
-
-# ==========================================================
-# CUSTOM CSS - Fresh White Theme with Vibrant Colors
-# ==========================================================
-
 st.markdown("""
 <style>
-    /* ===== MAIN BACKGROUND ===== */
-    .stApp {
-        background-color: #FFFFFF;
-    }
-    
-    /* ===== TYPOGRAPHY ===== */
-    h1, h2, h3, h4, h5, h6, p, li, span, div, label {
-        color: #2D3436 !important;
-    }
-    
-    /* ===== HEADER ===== */
+    /* Keep your existing CSS here */
     .main-header {
         background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
         padding: 2rem;
         border-radius: 15px;
         margin-bottom: 2rem;
         text-align: center;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
     }
     .main-header h1 {
         color: #FFFFFF !important;
-        font-size: 2.5rem;
-        margin: 0;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
     }
-    .main-header p {
-        color: #FFFFFF !important;
-        opacity: 0.95;
-        margin: 0;
-    }
-    
-    /* ===== SIDEBAR ===== */
-    [data-testid="stSidebar"] {
-        background-color: #F8F9FA;
-        border-right: 2px solid #4ECDC4;
-        padding: 1rem;
-    }
-    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
-        color: #FF6B6B !important;
-    }
-    [data-testid="stSidebar"] .stButton > button {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
-        color: #FFFFFF !important;
-        font-size: 0.9rem;
-        padding: 0.25rem 0.5rem;
-    }
-    
-    /* ===== EXPANDER ===== */
-    .streamlit-expanderHeader {
-        background-color: #F8F9FA !important;
-        color: #FF6B6B !important;
-        border: 2px solid #4ECDC4;
-        border-radius: 10px;
-        font-weight: 600;
-    }
-    .streamlit-expanderHeader svg {
-        fill: #FF6B6B !important;
-    }
-    .streamlit-expanderContent {
-        background-color: #F8F9FA !important;
-        border: 2px solid #4ECDC4;
-        border-top: none;
-        border-radius: 0 0 10px 10px;
-        padding: 1.5rem;
-    }
-    
-    /* ===== INPUT FIELDS ===== */
-    .stTextInput > div > div,
-    .stDateInput > div > div,
-    .stNumberInput > div > div,
-    .stSelectbox > div > div {
-        background-color: #F8F9FA !important;
-        border: 2px solid #4ECDC4 !important;
-        border-radius: 10px;
-        transition: all 0.3s ease;
-    }
-    .stTextInput > div > div:hover,
-    .stDateInput > div > div:hover,
-    .stNumberInput > div > div:hover,
-    .stSelectbox > div > div:hover {
-        border-color: #FF6B6B !important;
-        box-shadow: 0 4px 10px rgba(255, 107, 107, 0.1);
-    }
-    
-    .stTextInput input,
-    .stDateInput input,
-    .stNumberInput input {
-        color: #2D3436 !important;
-        background-color: transparent !important;
-        border: none !important;
-        padding: 0.75rem !important;
-    }
-    
-    .stTextInput input::placeholder,
-    .stDateInput input::placeholder,
-    .stNumberInput input::placeholder {
-        color: #A0A0A0 !important;
-    }
-    
-    .stTextInput label,
-    .stDateInput label,
-    .stNumberInput label,
-    .stSelectbox label,
-    .stCheckbox label {
-        color: #FF6B6B !important;
-        font-weight: 600;
-        margin-bottom: 0.25rem;
-    }
-    
-    /* ===== DROPDOWNS ===== */
-    .stSelectbox div[data-baseweb="select"] {
-        background-color: #F8F9FA !important;
-    }
-    .stSelectbox div[data-baseweb="select"] span {
-        color: #2D3436 !important;
-    }
-    
-    div[role="listbox"] {
-        background-color: #FFFFFF !important;
-        border: 2px solid #4ECDC4 !important;
-        border-radius: 10px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-    }
-    div[role="listbox"] ul {
-        background-color: #FFFFFF !important;
-        padding: 0.5rem !important;
-    }
-    div[role="listbox"] li {
-        color: #2D3436 !important;
-        background-color: #FFFFFF !important;
-        border-radius: 5px;
-        padding: 0.5rem 1rem !important;
-        margin: 2px 0;
-    }
-    div[role="listbox"] li:hover {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-        color: #FFFFFF !important;
-    }
-    
-    /* ===== NUMBER INPUT BUTTONS ===== */
-    .stNumberInput button {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-        color: #FFFFFF !important;
-        border: none !important;
-        border-radius: 5px !important;
-        transition: transform 0.2s ease;
-    }
-    .stNumberInput button:hover {
-        transform: scale(1.05);
-    }
-    .stNumberInput button svg {
-        fill: #FFFFFF !important;
-    }
-    
-    /* ===== CALENDAR ===== */
-    [data-baseweb="calendar"] {
-        background-color: #FFFFFF !important;
-        border: 2px solid #4ECDC4 !important;
-        border-radius: 10px;
-        padding: 1rem;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-    }
-    
-    [data-baseweb="calendar"] header {
-        background-color: #FFFFFF !important;
-        border-bottom: 2px solid #FF6B6B;
-        padding-bottom: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-    [data-baseweb="calendar"] header div {
-        color: #FF6B6B !important;
-        font-weight: bold;
-    }
-    [data-baseweb="calendar"] header button {
-        background-color: #F8F9FA !important;
-        color: #2D3436 !important;
-        border: 2px solid #4ECDC4 !important;
-        border-radius: 5px;
-        transition: all 0.3s ease;
-    }
-    [data-baseweb="calendar"] header button:hover {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-        color: #FFFFFF !important;
-    }
-    
-    [data-baseweb="calendar"] th {
-        color: #4ECDC4 !important;
-        background-color: #FFFFFF !important;
-        padding: 0.5rem;
-        font-weight: 600;
-    }
-    
-    [data-baseweb="calendar"] td {
-        background-color: #FFFFFF !important;
-        padding: 0.25rem;
-    }
-    [data-baseweb="calendar"] button[aria-label*="day"] {
-        background-color: #F8F9FA !important;
-        color: #2D3436 !important;
-        border: none !important;
-        border-radius: 8px;
-        width: 36px;
-        height: 36px;
-        transition: all 0.2s ease;
-    }
-    [data-baseweb="calendar"] button[aria-label*="day"]:hover {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-        color: #FFFFFF !important;
-        transform: scale(1.05);
-    }
-    [data-baseweb="calendar"] button[aria-selected="true"] {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-        color: #FFFFFF !important;
-        font-weight: bold;
-    }
-    [data-baseweb="calendar"] button[aria-label*="today"] {
-        border: 2px solid #FF6B6B !important;
-    }
-    
-    /* ===== CHECKBOX ===== */
-    .stCheckbox > div > div > div {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-    }
-    
-    /* ===== BUTTONS ===== */
-    .stButton > button {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
-        color: #FFFFFF !important;
-        font-weight: 600;
-        border: none;
-        border-radius: 25px;
-        padding: 0.5rem 2rem;
-        transition: all 0.3s ease;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        box-shadow: 0 4px 15px rgba(255, 107, 107, 0.2);
-    }
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(78, 205, 196, 0.3);
-    }
-    
-    /* ===== METRICS ===== */
-    [data-testid="stMetricValue"] {
-        color: #FF6B6B !important;
-        font-size: 2rem !important;
-        font-weight: bold;
-    }
-    [data-testid="stMetricLabel"] {
-        color: #4ECDC4 !important;
-        font-weight: 600;
-    }
-    
-    /* ===== TABS ===== */
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #F8F9FA;
-        border-radius: 10px;
-        padding: 0.5rem;
-        border: 2px solid #4ECDC4;
-    }
-    .stTabs [data-baseweb="tab"] {
-        color: #2D3436 !important;
-        border: 2px solid #4ECDC4;
-        border-radius: 20px;
-        margin: 0 0.25rem;
-        transition: all 0.3s ease;
-    }
-    .stTabs [data-baseweb="tab"]:hover {
-        border-color: #FF6B6B;
-    }
-    .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-        color: #FFFFFF !important;
-        border-color: transparent;
-    }
-    
-    /* ===== CHAT ===== */
     .chat-message-user {
         background: linear-gradient(135deg, #FF6B6B20, #4ECDC420);
-        color: #2D3436;
         padding: 1rem;
         border-radius: 20px 20px 5px 20px;
         border: 2px solid #FF6B6B;
@@ -626,574 +63,651 @@ st.markdown("""
     }
     .chat-message-bot {
         background: #F8F9FA;
-        color: #2D3436;
         padding: 1rem;
         border-radius: 20px 20px 20px 5px;
         border: 2px solid #4ECDC4;
         margin: 0.5rem 0;
-    }
-    [data-testid="stContainer"] {
-        background-color: #F8F9FA !important;
-        border: 2px solid #4ECDC4;
-        border-radius: 10px;
-        padding: 1rem;
-    }
-    
-    /* ===== SLIDER ===== */
-    .stSlider label {
-        color: #FF6B6B !important;
-    }
-    .stSlider div[data-baseweb="slider"] {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
-    }
-    
-    /* ===== DATAFRAME ===== */
-    .dataframe {
-        background-color: #FFFFFF;
-        color: #2D3436;
-        border: 2px solid #4ECDC4;
-        border-radius: 10px;
-    }
-    .dataframe th {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-        color: #FFFFFF !important;
-        padding: 0.75rem !important;
-    }
-    .dataframe td {
-        background-color: #F8F9FA;
-        color: #2D3436;
-        padding: 0.5rem !important;
-    }
-    
-    /* ===== ALERTS ===== */
-    .stAlert {
-        background-color: #F8F9FA !important;
-        color: #2D3436 !important;
-        border: 2px solid #FF6B6B;
-        border-radius: 10px;
-    }
-    
-    /* ===== PROGRESS BARS ===== */
-    .stProgress > div > div {
-        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
-    }
-    .stProgress > div {
-        background-color: #F0F0F0 !important;
-    }
-    
-    /* ===== RADIO BUTTONS ===== */
-    .stRadio > div {
-        background-color: transparent !important;
-    }
-    .stRadio label {
-        color: #2D3436 !important;
-    }
-    .stRadio input:checked + div {
-        color: #FF6B6B !important;
-    }
-    
-    /* ===== SPINNER ===== */
-    .stSpinner > div {
-        border-color: #FF6B6B transparent transparent transparent !important;
-    }
-    
-    /* ===== FLIGHT CARDS ===== */
-    .flight-card {
-        background-color: #F8F9FA;
-        padding: 1rem;
-        border-radius: 10px;
-        border: 2px solid #4ECDC4;
-        margin: 0.5rem 0;
-    }
-    .flight-card h4 {
-        color: #FF6B6B !important;
-    }
-    
-    /* ===== HOTEL CARDS ===== */
-    .hotel-card {
-        background-color: #F8F9FA;
-        padding: 1rem;
-        border-radius: 10px;
-        border: 2px solid #FF6B6B;
-        margin: 0.5rem 0;
-    }
-    .hotel-card h4 {
-        color: #4ECDC4 !important;
-    }
-    
-    /* ===== COMMENTARY BOX ===== */
-    .commentary-box {
-        background: linear-gradient(135deg, #FF6B6B20, #4ECDC420);
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 4px solid #FF6B6B;
-        margin: 1rem 0;
-        font-size: 1.1rem;
-    }
-    
-    /* ===== PAST TRIP ITEMS ===== */
-    .past-trip-item {
-        background-color: #FFFFFF;
-        padding: 0.75rem;
-        border-radius: 8px;
-        border: 1px solid #4ECDC4;
-        margin: 0.5rem 0;
-        transition: all 0.2s ease;
-    }
-    .past-trip-item:hover {
-        border-color: #FF6B6B;
-        box-shadow: 0 2px 8px rgba(255, 107, 107, 0.1);
     }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ==========================================================
-# SESSION STATE INITIALIZATION
+# CHAT FUNCTION SCHEMAS
 # ==========================================================
 
-if 'search_history' not in st.session_state:
-    st.session_state.search_history = []
-if 'current_result' not in st.session_state:
-    st.session_state.current_result = None
-if 'optimization_iterations' not in st.session_state:
-    st.session_state.optimization_iterations = []
+CHAT_FUNCTIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_flights",
+            "description": "Search for new flight options",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string", "description": "Origin city or airport code"},
+                    "destination": {"type": "string", "description": "Destination city or airport code"},
+                    "departure_date": {"type": "string", "description": "Departure date (YYYY-MM-DD)"},
+                    "return_date": {"type": "string", "description": "Return date (YYYY-MM-DD)"}
+                },
+                "required": ["origin", "destination", "departure_date", "return_date"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_hotels",
+            "description": "Search for new hotel options",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "destination": {"type": "string", "description": "Destination city or area"},
+                    "check_in": {"type": "string", "description": "Check-in date (YYYY-MM-DD)"},
+                    "check_out": {"type": "string", "description": "Check-out date (YYYY-MM-DD)"}
+                },
+                "required": ["destination", "check_in", "check_out"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "adjust_budget",
+            "description": "Change the trip budget",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "new_budget": {"type": "number", "description": "New budget amount in USD"}
+                },
+                "required": ["new_budget"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "change_strategy",
+            "description": "Change the budget allocation strategy",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "new_strategy": {
+                        "type": "string",
+                        "enum": ["cheapest_overall", "splurge_flight", "splurge_hotel"],
+                        "description": "New strategy to use"
+                    }
+                },
+                "required": ["new_strategy"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "adjust_iterations",
+            "description": "Change the number of optimization iterations",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "new_iterations": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Number of optimization attempts"
+                    }
+                },
+                "required": ["new_iterations"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_dates",
+            "description": "Change travel dates",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "departure_date": {"type": "string", "description": "New departure date (YYYY-MM-DD)"},
+                    "return_date": {"type": "string", "description": "New return date (YYYY-MM-DD)"}
+                },
+                "required": ["departure_date", "return_date"]
+            }
+        }
+    },
+    {
+    "type": "function",
+    "function": {
+        "name": "update_preferences",
+        "description": "Update travel preferences like red-eye flights",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prefer_red_eyes": {
+                    "type": "boolean",
+                    "description": "Whether to prefer red-eye flights"
+                }
+            },
+            "required": ["prefer_red_eyes"]
+        }
+    }
+    }
+]
+
+
+def execute_functions(function_calls: list, current_params: dict) -> dict:
+    """Execute multiple function calls and return updates."""
+    all_updates = {}
+    all_results = []
+    should_replan = False
+    
+    for func_call in function_calls:
+        function_name = func_call["function"]
+        arguments = func_call["arguments"]
+        
+        if function_name == "adjust_budget":
+            new_budget = arguments.get("new_budget")
+            if new_budget:
+                all_updates["total_budget"] = float(new_budget)
+                all_results.append(f"budget changed to ${new_budget}")
+        
+        elif function_name == "change_strategy":
+            new_strategy = arguments.get("new_strategy")
+            if new_strategy:
+                all_updates["strategy"] = new_strategy
+                strategy_display = {
+                    'cheapest_overall': 'Cheapest Overall',
+                    'splurge_flight': 'Splurge on Flights',
+                    'splurge_hotel': 'Splurge on Hotel'
+                }.get(new_strategy, new_strategy)
+                all_results.append(f"strategy changed to {strategy_display}")
+        
+        elif function_name == "adjust_iterations":
+            new_iterations = arguments.get("new_iterations")
+            if new_iterations:
+                all_updates["max_iterations"] = int(new_iterations)
+                all_results.append(f"optimization iterations set to {new_iterations}")
+        
+        elif function_name == "update_dates":
+            departure = arguments.get("departure_date")
+            return_date = arguments.get("return_date")
+            if departure:
+                all_updates["departure_date"] = departure
+            if return_date:
+                all_updates["return_date"] = return_date
+            all_results.append(f"dates updated to {departure} to {return_date}")
+        
+        elif function_name in ["search_flights", "search_hotels"]:
+            should_replan = True
+            all_results.append(f"searching for new {function_name.replace('_', ' ')}")
+
+        elif function_name == "update_preferences":
+            prefer_red_eyes = arguments.get("prefer_red_eyes")
+            if prefer_red_eyes is not None:
+                all_updates["prefer_red_eyes"] = prefer_red_eyes
+                all_results.append(f"red-eye preference set to {'enabled' if prefer_red_eyes else 'disabled'}")
+                should_replan = True
+    
+    return {
+        "updates": all_updates,
+        "results": all_results,
+        "should_replan": should_replan or bool(all_updates)
+    }
+
+
+def get_conversational_response(user_message: str, trip_data: dict, chat_history: list, function_results: list = None) -> str:
+    """Get a natural language response from the LLM."""
+    
+    # Build rich context
+    flights = trip_data.get("data", {}).get("flights", [])
+    hotel = trip_data.get("data", {}).get("hotel", {})
+    metadata = trip_data.get("metadata", {})
+    
+    # Format flight information nicely
+    flight_info = []
+    for i, f in enumerate(flights, 1):
+        direction = "Outbound" if i == 1 else "Return"
+        airline = f.get('airline', 'Unknown')
+        airline_code = f.get('airline_code', '')
+        if airline_code and airline != airline_code:
+            airline_display = f"{airline} ({airline_code})"
+        else:
+            airline_display = airline
+        
+        flight_info.append(f"{direction} Flight: {airline_display} {f.get('flight_number', '')}")
+        flight_info.append(f"  • Depart: {f.get('departure_date', 'Unknown')}")
+        flight_info.append(f"  • Arrive: {f.get('arrival_date', 'Unknown')}")
+        flight_info.append(f"  • Duration: {f.get('duration', 'Unknown')}")
+        flight_info.append(f"  • Cost: ${f.get('cost', 0):.2f}")
+    
+    # Format hotel information
+    hotel_info = []
+    if hotel:
+        hotel_info.append(f"Hotel: {hotel.get('name', 'Unknown')}")
+        hotel_info.append(f"  • Total Cost: ${hotel.get('total', 0):.2f}")
+        if hotel.get('rating'):
+            hotel_info.append(f"  • Rating: {hotel.get('rating')}⭐")
+    else:
+        hotel_info.append("No hotel selected yet.")
+    
+    context = {
+        "current_trip": {
+            "origin": metadata.get("origin", "Unknown"),
+            "destination": metadata.get("destination", "Unknown"),
+            "dates": f"{metadata.get('departure_date')} to {metadata.get('return_date')}",
+            "total_budget": f"${metadata.get('total_budget', 0):.2f}",
+            "total_cost": f"${trip_data.get('data', {}).get('total_cost', 0):.2f}",
+            "remaining_budget": f"${trip_data.get('data', {}).get('remaining_budget', 0):.2f}",
+            "strategy": metadata.get('strategy', 'cheapest_overall').replace('_', ' ').title(),
+            "optimization_status": trip_data.get('data', {}).get('status', 'unknown'),
+            "iterations_used": f"{trip_data.get('data', {}).get('iterations_used', 0)}/{metadata.get('max_iterations', 5)}"
+        },
+        "flights": "\n".join(flight_info) if flight_info else "No flights found.",
+        "hotel": "\n".join(hotel_info) if hotel_info else "No hotel found."
+    }
+    
+    system_prompt = f"""You are a friendly and knowledgeable travel assistant. Your role is to help users plan their trip by having natural conversations.
+
+CURRENT TRIP CONTEXT:
+{json.dumps(context, indent=2)}
+
+You have access to functions that can modify the trip parameters. When users want to make changes:
+- Adjust budget → They want to spend more or less
+- Change strategy → They want to prioritize flights or hotels
+- Adjust iterations → They want more optimization attempts
+- Update dates → They want different travel dates
+- Search for new options → They want to explore alternatives
+
+Guidelines for your responses:
+1. Be conversational and friendly - use emojis appropriately
+2. When users ask questions, provide helpful answers using the context
+3. If they ask for something you don't have (like hotel addresses), explain what you can do instead
+4. After making changes, explain what you did and what will happen next
+5. Keep responses concise but warm - 2-3 sentences usually
+6. If they're asking about flight times, reference the specific flights
+7. Celebrate when we find a good deal within budget!
+
+Remember: You're helping a real person plan their vacation. Be excited for them!"""
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        *[{"role": m["role"], "content": m["message"]} for m in chat_history[-8:]],  # Last 8 messages for context
+    ]
+    
+    # If we have function results to report, add them as a system note
+    if function_results:
+        messages.append({
+            "role": "system", 
+            "content": f"Note to you: The following changes were just made: {', '.join(function_results)}. Acknowledge these changes in your response."
+        })
+    
+    messages.append({"role": "user", "content": user_message})
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            max_tokens=300,
+            temperature=0.7,  # Slightly higher temperature for more natural responses
+            timeout=10
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        return f"I'm having trouble responding right now. Error: {str(e)}"
+
+
+def process_chat_message(user_message: str, trip_data: dict, chat_history: list, current_params: dict) -> dict:
+    """Process chat message - determine if function calls are needed."""
+    
+    # Build context for function calling
+    context = {
+        "current_trip": {
+            "origin": trip_data.get("metadata", {}).get("origin", "Unknown"),
+            "destination": trip_data.get("metadata", {}).get("destination", "Unknown"),
+            "departure_date": trip_data.get("metadata", {}).get("departure_date"),
+            "return_date": trip_data.get("metadata", {}).get("return_date"),
+            "total_budget": trip_data.get("metadata", {}).get("total_budget", 0),
+            "strategy": trip_data.get("metadata", {}).get("strategy", "cheapest_overall"),
+            "total_cost": trip_data.get("data", {}).get("total_cost", 0),
+            "iterations_used": trip_data.get("data", {}).get("iterations_used", 0),
+            "max_iterations": trip_data.get("metadata", {}).get("max_iterations", 5),
+        }
+    }
+    
+    system_prompt = f"""You are a travel assistant that helps users by calling functions when they want to make changes.
+
+Current trip context:
+{json.dumps(context, indent=2)}
+
+Available functions:
+- search_flights: When user wants to search for new flights
+- search_hotels: When user wants to search for new hotels  
+- adjust_budget: When user wants to change budget
+- change_strategy: When user wants to change allocation strategy
+- adjust_iterations: When user wants to change optimization iterations
+- update_dates: When user wants to change travel dates
+
+If the user is just asking a question or having a conversation, do NOT call any functions.
+Only call functions when they explicitly want to make changes to the trip.
+You can call multiple functions if the user makes multiple requests in one message."""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        *[{"role": m["role"], "content": m["message"]} for m in chat_history[-5:]],
+        {"role": "user", "content": user_message}
+    ]
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            tools=CHAT_FUNCTIONS,
+            tool_choice="auto",
+            max_tokens=200,
+            temperature=0.0,
+            timeout=10
+        )
+        
+        message = response.choices[0].message
+        
+        if message.tool_calls and len(message.tool_calls) > 0:
+            # Extract function calls
+            function_calls = []
+            for tool_call in message.tool_calls:
+                function_calls.append({
+                    "function": tool_call.function.name,
+                    "arguments": json.loads(tool_call.function.arguments)
+                })
+            
+            return {
+                "type": "function_calls",
+                "function_calls": function_calls
+            }
+        else:
+            return {
+                "type": "conversation",
+                "function_calls": []
+            }
+            
+    except Exception as e:
+        print(f"Error in process_chat_message: {e}")
+        return {
+            "type": "conversation",
+            "function_calls": []
+        }
+
+
+# ==========================================================
+# SESSION STATE
+# ==========================================================
+
+if 'trip_result' not in st.session_state:
+    st.session_state.trip_result = None
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
-if 'current_search_params' not in st.session_state:
-    st.session_state.current_search_params = {}
-if 'waiting_for_response' not in st.session_state:
-    st.session_state.waiting_for_response = False
+if 'optimization_iterations' not in st.session_state:
+    st.session_state.optimization_iterations = []
+if 'current_params' not in st.session_state:
+    st.session_state.current_params = {
+        'origin': 'San Francisco',
+        'destination': 'New York City',
+        'departure_date': (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
+        'return_date': (datetime.now() + timedelta(days=37)).strftime("%Y-%m-%d"),
+        'total_budget': 1500.0,
+        'strategy': 'cheapest_overall',
+        'prefer_red_eyes': False,
+        'adults': 1,
+        'max_iterations': 5,
+    }
+if 'last_chat_time' not in st.session_state:
+    st.session_state.last_chat_time = 0
 if 'show_debug' not in st.session_state:
     st.session_state.show_debug = False
-if 'past_trips' not in st.session_state:
-    st.session_state.past_trips = []
+if 'processing_message' not in st.session_state:
+    st.session_state.processing_message = False
 
 
 # ==========================================================
-# HEADER
+# UI HEADER
 # ==========================================================
 
 st.markdown("""
 <div class="main-header">
     <h1>✈️ AI TRAVEL PLANNER</h1>
-    <p>Intelligent trip optimization with chat interface</p>
+    <p>Your Personal Travel Assistant</p>
 </div>
 """, unsafe_allow_html=True)
 
 
 # ==========================================================
-# PAST TRIPS SIDEBAR
+# SIDEBAR - Trip Parameters
 # ==========================================================
 
 with st.sidebar:
-    st.markdown("### 📜 Past Trips")
-    st.markdown("---")
+    st.markdown("### 🎯 Your Trip Details")
     
-    if st.session_state.past_trips:
-        # Show last 10 trips in reverse chronological order
-        for i, trip in enumerate(reversed(st.session_state.past_trips[-10:])):
-            # Create a unique key for each trip
-            trip_key = f"past_trip_{i}_{trip.get('timestamp', '')}"
-            
-            # Format the trip display
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                st.markdown(f"**{trip['origin']} → {trip['destination']}**")
-                st.caption(f"{trip['date_range']} | ${trip['total_cost']:.0f}")
-            
-            with col2:
-                if st.button("📋", key=f"load_{trip_key}", help="Load this trip"):
-                    st.session_state.current_result = trip['result']
-                    st.session_state.current_search_params = trip['search_params'].copy()
-                    st.session_state.chat_history = trip.get('chat_history', []).copy()
-                    st.rerun()
-            
-            st.markdown("---")
-        
-        # Clear history button
-        if st.button("🗑️ Clear All History", use_container_width=True):
-            st.session_state.past_trips = []
-            st.rerun()
+    origin = st.text_input("From", value=st.session_state.current_params['origin'])
+    destination = st.text_input("To", value=st.session_state.current_params['destination'])
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        departure = st.date_input(
+            "Depart",
+            value=datetime.strptime(st.session_state.current_params['departure_date'], "%Y-%m-%d").date()
+        )
+    with col2:
+        return_date = st.date_input(
+            "Return",
+            value=datetime.strptime(st.session_state.current_params['return_date'], "%Y-%m-%d").date()
+        )
+    
+    if return_date <= departure:
+        st.error("Return date must be after departure date!")
+        valid_dates = False
     else:
-        st.info("No past trips yet. Plan your first trip!")
-        st.markdown("---")
+        valid_dates = True
     
-    # Show current session stats
-    st.markdown("### 📊 Session Stats")
-    if st.session_state.current_result:
-        st.metric("Current Trip Cost", f"${st.session_state.current_result.get('total_cost', 0):.2f}")
-    st.metric("Total Trips Planned", len(st.session_state.past_trips))
-    st.metric("Chat Messages", len([m for m in st.session_state.chat_history if m['role'] == 'user']))
+    total_budget = st.number_input(
+        "Budget ($)",
+        min_value=100.0,
+        max_value=10000.0,
+        value=float(st.session_state.current_params['total_budget']),
+        step=100.0
+    )
+    
+    strategy_options = {
+        "cheapest_overall": "Cheapest Overall",
+        "splurge_flight": "Splurge on Flights",
+        "splurge_hotel": "Splurge on Hotel"
+    }
+    current_strategy = st.session_state.current_params['strategy']
+    strategy = st.selectbox(
+        "Strategy",
+        options=list(strategy_options.keys()),
+        format_func=lambda x: strategy_options[x],
+        index=list(strategy_options.keys()).index(current_strategy) if current_strategy in strategy_options else 0
+    )
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        prefer_red_eyes = st.checkbox(
+            "Prefer Red-Eye",
+            value=st.session_state.current_params['prefer_red_eyes']
+        )
+    with col4:
+        adults = st.number_input(
+            "Adults",
+            min_value=1,
+            max_value=4,
+            value=st.session_state.current_params['adults']
+        )
+    
+    max_iterations = st.slider(
+        "Optimization Attempts",
+        min_value=1,
+        max_value=20,
+        value=st.session_state.current_params['max_iterations']
+    )
+    
+    show_debug = st.checkbox("Show Debug Info", value=st.session_state.show_debug)
+    st.session_state.show_debug = show_debug
+    
+    if st.button("🔍 Plan New Trip", use_container_width=True, disabled=not valid_dates):
+        st.session_state.current_params.update({
+            'origin': origin,
+            'destination': destination,
+            'departure_date': departure.strftime("%Y-%m-%d"),
+            'return_date': return_date.strftime("%Y-%m-%d"),
+            'total_budget': float(total_budget),
+            'strategy': strategy,
+            'prefer_red_eyes': prefer_red_eyes,
+            'adults': adults,
+            'max_iterations': max_iterations,
+        })
+        
+        with st.spinner("Planning your perfect trip..."):
+            try:
+                result = plan_trip(
+                    origin=origin,
+                    destination=destination,
+                    departure_date=departure.strftime("%Y-%m-%d"),
+                    return_date=return_date.strftime("%Y-%m-%d"),
+                    total_budget=float(total_budget),
+                    strategy=Strategy(strategy),
+                    prefer_red_eyes=prefer_red_eyes,
+                    adults=adults,
+                    max_iterations=max_iterations,
+                )
+                
+                st.session_state.trip_result = result
+                st.session_state.optimization_iterations = result.get("optimization_history", [])
+                
+                # Get a warm welcome from the assistant
+                welcome_message = get_conversational_response(
+                    "I just planned my first trip. Can you help me with it?",
+                    result,
+                    [],
+                    None
+                )
+                st.session_state.chat_history = [{"role": "assistant", "message": welcome_message}]
+                
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+    
+    st.markdown("---")
+    if st.session_state.trip_result:
+        total = st.session_state.trip_result.get("data", {}).get("total_cost", 0)
+        st.metric("Current Total", f"${total:.2f}")
 
 
 # ==========================================================
-# MAIN CONTENT - Two columns: Main (70%) and Chat (30%)
+# MAIN CONTENT - Results and Chat
 # ==========================================================
 
 col_main, col_chat = st.columns([0.7, 0.3])
 
 with col_main:
-    # Input section
-    with st.expander("🎯 Plan a New Trip", expanded=not st.session_state.current_result):
-        col1, col2 = st.columns(2)
+    if st.session_state.trip_result:
+        result = st.session_state.trip_result
+        data = result.get("data", {})
+        metadata = result.get("metadata", {})
+        
+        # Metrics
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            origin = st.text_input("From (City or Airport Code)", value="San Francisco", 
-                                  help="Enter city name (e.g., San Francisco, New York) or airport code (e.g., SFO, JFK, LAX)")
+            st.metric("Total Cost", f"${data.get('total_cost', 0):.2f}")
         with col2:
-            destination = st.text_input("To (City or Airport Code)", value="New York City",
-                                       help="Enter city name (e.g., New York, Los Angeles) or airport code (e.g., JFK, LAX)")
-        
-        col3, col4 = st.columns(2)
+            st.metric("Remaining", f"${data.get('remaining_budget', 0):.2f}")
         with col3:
-            today = datetime.now().date()
-            departure_date = st.date_input("Departure Date", value=today + timedelta(days=30))
+            if data.get('flight_ratio'):
+                st.metric("Flights %", f"{data['flight_ratio']*100:.0f}%")
+            else:
+                iterations_used = data.get("iterations_used", 0)
+                max_iterations = metadata.get("max_iterations", 5)
+                st.metric("Iterations", f"{iterations_used}/{max_iterations}")
         with col4:
-            return_date = st.date_input("Return Date", value=today + timedelta(days=37))
-        
-        col5, col6 = st.columns(2)
-        with col5:
-            total_budget = st.number_input("Total Budget ($)", 
-                                           min_value=100, max_value=10000, value=1500, step=100)
-        with col6:
-            # Format strategy options nicely without underscores
-            strategy_options = {
-                "cheapest_overall": "Cheapest Overall",
-                "splurge_flight": "Splurge on Flights", 
-                "splurge_hotel": "Splurge on Hotel"
-            }
-            selected_strategy_display = st.selectbox(
-                "Budget Strategy",
-                options=list(strategy_options.values()),
-                index=0
-            )
-            # Map back to enum value
-            strategy_map = {v: k for k, v in strategy_options.items()}
-            strategy = strategy_map[selected_strategy_display]
-        
-        col7, col8 = st.columns(2)
-        with col7:
-            prefer_red_eyes = st.checkbox("Prefer Red-Eye Flights", value=False,
-                                         help="Prefer overnight flights (usually cheaper)")
-        with col8:
-            adults = st.number_input("Number of Adults", min_value=1, max_value=4, value=1)
-        
-        # Advanced Options
-        with st.expander("🔧 Advanced Options"):
-            col9, col10 = st.columns(2)
-            with col9:
-                max_iterations = st.slider("Max Optimization Attempts", 1, 20, 3,
-                                          help="Maximum number of optimization attempts (controls how many times the system tries to find a solution)")
-            with col10:
-                show_debug = st.checkbox("Show Debug Information", value=st.session_state.show_debug,
-                                        help="Display optimization journey and API responses")
-                st.session_state.show_debug = show_debug
-            
-            st.markdown("---")
-            st.markdown(f"**Current Setting:** System will make up to **{max_iterations}** optimization attempt(s). Increase if no solution found.")
-        
-        if st.button("🔍 Plan My Trip", use_container_width=True):
-            with st.spinner("🔄 Planning your trip... This may take a moment."):
-                try:
-                    # Format user input with max_iterations
-                    user_input = f"""
-                    Plan a trip from {origin} to {destination}.
-                    Depart on {departure_date}, return on {return_date}.
-                    Total budget is ${total_budget}.
-                    Strategy preference: {strategy}.
-                    {'Prefer red-eye flights.' if prefer_red_eyes else ''}
-                    Number of adults: {adults}.
-                    max_iterations: {max_iterations}
-                    """
-                    
-                    # Store search params
-                    st.session_state.current_search_params = {
-                        'origin': origin,
-                        'destination': destination,
-                        'departure_date': departure_date,
-                        'return_date': return_date,
-                        'total_budget': total_budget,
-                        'strategy': strategy,
-                        'prefer_red_eyes': prefer_red_eyes,
-                        'adults': adults,
-                        'user_input': user_input,
-                        'max_iterations': max_iterations,
-                        'show_debug': show_debug
-                    }
-                    
-                    # Clear previous results
-                    st.session_state.optimization_iterations = []
-                    st.session_state.chat_history = []
-                    
-                    # Run the orchestrator
-                    result_str = run_overarching_bot(user_input)
-                    
-                    # Parse the result
-                    try:
-                        result_data = json.loads(result_str)
-                        if isinstance(result_data, dict) and "data" in result_data:
-                            result = result_data["data"]
-                            formatted_message = result_data.get("formatted", "")
-                            if formatted_message and not result.get("message"):
-                                result["message"] = formatted_message
-                            # Store optimization history
-                            st.session_state.optimization_iterations = result_data.get("optimization_history", [])
-                            # Store commentary
-                            commentary = result_data.get("commentary", "")
-                        else:
-                            result = result_data
-                            commentary = None
-                    except json.JSONDecodeError:
-                        result = {
-                            "status": "complete",
-                            "message": result_str,
-                            "flights": [],
-                            "hotel": {},
-                            "total_cost": 0,
-                            "remaining_budget": 0
-                        }
-                        commentary = None
-                    
-                    st.session_state.current_result = result
-                    
-                    # Save to past trips if we got actual results (flights exist)
-                    if result and result.get('flights') and len(result.get('flights', [])) > 0:
-                        date_range = f"{departure_date.strftime('%m/%d')} - {return_date.strftime('%m/%d')}"
-                        trip_record = {
-                            'origin': origin,
-                            'destination': destination,
-                            'date_range': date_range,
-                            'total_cost': result.get('total_cost', 0),
-                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            'result': result,
-                            'search_params': st.session_state.current_search_params.copy(),
-                            'chat_history': st.session_state.chat_history.copy()
-                        }
-                        
-                        # Avoid duplicates (simple check)
-                        is_duplicate = False
-                        for t in st.session_state.past_trips:
-                            if (t['origin'] == origin and 
-                                t['destination'] == destination and 
-                                abs(t['total_cost'] - result.get('total_cost', 0)) < 1):
-                                is_duplicate = True
-                                break
-                        
-                        if not is_duplicate:
-                            st.session_state.past_trips.append(trip_record)
-                    
-                    # Add initial bot message to chat
-                    welcome_msg = "Your trip is planned! Ask me questions or request changes like:\n"
-                    welcome_msg += "• 'How long is the flight?'\n"
-                    welcome_msg += "• 'Find cheaper flights'\n"
-                    welcome_msg += "• 'Show me better hotels'\n"
-                    welcome_msg += "• 'What's the total cost?'\n"
-                    welcome_msg += "• 'Increase budget to $2000 and switch to splurge on flights'\n"
-                    welcome_msg += "• 'Any recommendations?'"
-                    
-                    st.session_state.chat_history.append({
-                        "role": "bot",
-                        "message": welcome_msg
-                    })
-                    
-                    # Add commentary to chat if available (for both success AND failure)
-                    if commentary:
-                        st.session_state.chat_history.append({
-                            "role": "bot",
-                            "message": commentary
-                        })
-                    
-                    # Add debug info if enabled
-                    if show_debug and st.session_state.optimization_iterations:
-                        st.session_state.chat_history.append({
-                            "role": "bot",
-                            "message": f"🔧 Optimization used {len(st.session_state.optimization_iterations)} internal iterations across {max_iterations} allowed attempts."
-                        })
-                    
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Error planning trip: {str(e)}")
-                    # Add error to chat history for visibility
-                    st.session_state.chat_history.append({
-                        "role": "bot",
-                        "message": f"❌ An error occurred: {str(e)}"
-                    })
-    
-    # Display current trip results
-    if st.session_state.current_result:
-        result = st.session_state.current_result
-        
-        # Check if we have any flights (success) or not (failure)
-        has_flights = result.get('flights') and len(result.get('flights', [])) > 0
-        
-        if has_flights:
-            # Success case - show metrics and details
-            # Summary metrics
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Cost", f"${result.get('total_cost', 0):.2f}")
-            with col2:
-                st.metric("Remaining Budget", f"${result.get('remaining_budget', 0):.2f}")
-            with col3:
-                flight_ratio = result.get('flight_ratio', 0)
-                if flight_ratio:
-                    st.metric("Flights %", f"{flight_ratio*100:.0f}%")
-            with col4:
-                hotel_ratio = result.get('hotel_ratio', 0)
-                if hotel_ratio:
-                    st.metric("Hotel %", f"{hotel_ratio*100:.0f}%")
-            
-            # Flights section
-            st.markdown("### ✈️ Selected Flights")
-            flights = result.get('flights', [])
-            if flights:
-                tabs = st.tabs([f"Flight {i+1}" for i in range(len(flights))])
-                for i, (tab, flight) in enumerate(zip(tabs, flights)):
-                    with tab:
-                        st.markdown(f"""
-                        <div class="flight-card">
-                            <h4>{flight.get('airline', 'Unknown')} - {flight.get('flight_number', 'N/A')}</h4>
-                            <p><strong>From:</strong> {flight.get('home_airport', 'N/A')}</p>
-                            <p><strong>To:</strong> {flight.get('destination', 'N/A')}</p>
-                            <p><strong>Departure:</strong> {flight.get('departure_date', 'N/A')}</p>
-                            <p><strong>Arrival:</strong> {flight.get('arrival_date', 'N/A')}</p>
-                            <p><strong>Duration:</strong> {flight.get('duration', 'N/A')}</p>
-                            <h3 style="color: #FF6B6B;">${flight.get('cost', 0):.2f}</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                with st.expander("📊 View Flight Comparison"):
-                    flight_df = pd.DataFrame(flights)
-                    display_cols = ['airline', 'flight_number', 'home_airport', 'destination', 
-                                   'departure_date', 'arrival_date', 'duration', 'cost']
-                    display_cols = [col for col in display_cols if col in flight_df.columns]
-                    if display_cols:
-                        st.dataframe(flight_df[display_cols], use_container_width=True)
+            if data.get('hotel_ratio'):
+                st.metric("Hotel %", f"{data['hotel_ratio']*100:.0f}%")
             else:
-                st.info("No flights found. Try adjusting your search.")
-            
-            # Hotel section
-            st.markdown("### 🏨 Selected Hotel")
-            hotel = result.get('hotel', {})
-            if hotel and isinstance(hotel, dict) and hotel.get('name'):
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    hotel_name = hotel.get('name', 'Unknown Hotel')
-                    rating = hotel.get('rating', '')
-                    try:
-                        rating_float = float(rating) if rating else 0
-                        rating_display = '⭐' * int(rating_float) if rating_float > 0 else 'Not rated'
-                    except (ValueError, TypeError):
-                        rating_display = 'Not rated'
-                    
-                    st.markdown(f"""
-                    <div class="hotel-card">
-                        <h4>{hotel_name}</h4>
-                        <p><strong>Rating:</strong> {rating_display}</p>
-                        <p><strong>Check-in:</strong> {st.session_state.current_search_params.get('departure_date', 'N/A')}</p>
-                        <p><strong>Check-out:</strong> {st.session_state.current_search_params.get('return_date', 'N/A')}</p>
-                        <h3 style="color: #4ECDC4;">${hotel.get('cost', 0):.2f}</h3>
-                    </div>
-                    """, unsafe_allow_html=True)
+                status = data.get("status", "unknown")
+                st.metric("Status", status.replace("_", " ").title())
+        
+        # Flights
+        st.markdown("### ✈️ Your Flights")
+        flights = data.get('flights', [])
+        if flights:
+            for i, flight in enumerate(flights, 1):
+                airline = flight.get('airline', 'Unknown')
+                airline_code = flight.get('airline_code', '')
+                flight_num = flight.get('flight_number', '')
                 
-                with col2:
-                    st.markdown("#### Details")
-                    st.write(f"**Hotel ID:** {hotel.get('hotelId', 'N/A')}")
-                    st.write(f"**Offer ID:** {hotel.get('offerId', 'N/A')}")
-                    st.write(f"**Currency:** {hotel.get('currency', 'USD')}")
-            else:
-                st.info("No hotel found. Try adjusting your search.")
+                if airline_code and airline != airline_code:
+                    airline_display = f"{airline} ({airline_code})"
+                else:
+                    airline_display = airline
+                
+                with st.container():
+                    cols = st.columns([2, 1, 1, 1])
+                    with cols[0]:
+                        st.markdown(f"**{airline_display}**")
+                        st.caption(f"{flight_num} • {flight.get('home_airport')} → {flight.get('destination')}")
+                    with cols[1]:
+                        st.markdown(f"Depart\n{flight.get('departure_date', 'N/A')}")
+                    with cols[2]:
+                        st.markdown(f"Arrive\n{flight.get('arrival_date', 'N/A')}")
+                    with cols[3]:
+                        st.markdown(f"**${flight.get('cost', 0):.2f}**")
+                    st.divider()
         else:
-            # Failure case - show helpful message
-            st.markdown("""
-            <div class="commentary-box">
-                <strong>⚠️ No solution found within your constraints</strong>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Show summary of what was tried
-            st.markdown("### 📊 Search Summary")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Budget", f"${st.session_state.current_search_params.get('total_budget', 0):.2f}")
-            with col2:
-                st.metric("Attempts Used", st.session_state.current_search_params.get('max_iterations', 3))
-            
-            # Show flight options that were found (even if no hotel)
-            flights = result.get('flights', [])
-            if flights:
-                st.markdown("### ✈️ Available Flights Found")
-                st.info(f"Found {len(flights)} flight options starting at ${min(f.get('cost', 0) for f in flights):.2f}")
-                with st.expander("View Flight Options"):
-                    for i, flight in enumerate(flights):
-                        st.markdown(f"""
-                        <div class="flight-card">
-                            <h4>{flight.get('airline', 'Unknown')} - {flight.get('flight_number', 'N/A')}</h4>
-                            <p><strong>From:</strong> {flight.get('home_airport', 'N/A')}</p>
-                            <p><strong>To:</strong> {flight.get('destination', 'N/A')}</p>
-                            <p><strong>Departure:</strong> {flight.get('departure_date', 'N/A')}</p>
-                            <p><strong>Arrival:</strong> {flight.get('arrival_date', 'N/A')}</p>
-                            <p><strong>Duration:</strong> {flight.get('duration', 'N/A')}</p>
-                            <h3 style="color: #FF6B6B;">${flight.get('cost', 0):.2f}</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-            
-            # Show suggestions
-            st.markdown("### 💡 Suggestions")
-            st.markdown("""
-            - **Increase your budget** - Try adding 20-30% more or specify an amount like "increase budget to $2000"
-            - **Change your strategy** - Try "switch to splurge on flights" or "use cheapest overall"
-            - **Adjust your dates** - Mid-week flights are often cheaper
-            - **Increase optimization attempts** - Use the slider in Advanced Options
-            - **Consider different areas** - Hotels outside city center may be cheaper
-            """)
+            st.info("No flights found for this route")
         
-        # Debug section - only shown when checkbox is enabled (works for both success/failure)
-        if st.session_state.show_debug and st.session_state.optimization_iterations:
-            with st.expander("🔧 Optimization Journey Details", expanded=False):
-                st.markdown(f"**Total Internal Iterations:** {len(st.session_state.optimization_iterations)}")
+        # Hotel
+        st.markdown("### 🏨 Your Hotel")
+        hotel = data.get('hotel')
+        if hotel:
+            cols = st.columns([3, 1, 1])
+            with cols[0]:
+                st.markdown(f"**{hotel.get('name', 'Unknown')}**")
+                rating = hotel.get('rating')
+                if rating:
+                    st.caption(f"Rating: {rating}⭐")
+            with cols[1]:
+                st.markdown("Total")
+            with cols[2]:
+                st.markdown(f"**${hotel.get('total', 0):.2f}**")
+        else:
+            st.info("No hotel found")
+        
+        # Debug section
+        if st.session_state.show_debug:
+            with st.expander("🔧 Optimization Details"):
+                iterations_used = data.get("iterations_used", 0)
+                max_iterations = metadata.get("max_iterations", 0)
                 
-                # Create tabs for different views of debug data
-                debug_tab1, debug_tab2 = st.tabs(["📋 Summary", "🔍 Detailed JSON"])
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Iterations Used", f"{iterations_used}/{max_iterations}")
+                with col2:
+                    status = data.get("status", "unknown")
+                    st.metric("Status", status.replace("_", " ").title())
                 
-                with debug_tab1:
-                    # Create a summary dataframe
-                    summary_data = []
-                    for it in st.session_state.optimization_iterations:
-                        summary_data.append({
-                            "Iteration": it.get("iteration", 0),
-                            "Action": it.get("action", "unknown").replace("_", " ").title(),
-                            "Flight Ratio": f"{it.get('flight_ratio', 0)*100:.0f}%" if it.get('flight_ratio') else "N/A",
-                            "Hotel Ratio": f"{it.get('hotel_ratio', 0)*100:.0f}%" if it.get('hotel_ratio') else "N/A",
-                            "Flight Budget": f"${it.get('flight_budget', 0):.0f}" if it.get('flight_budget') else "N/A",
-                            "Hotel Budget": f"${it.get('hotel_budget', 0):.0f}" if it.get('hotel_budget') else "N/A",
-                            "Flights Found": it.get("valid_flights_count", 0),
-                            "Hotels Found": it.get("valid_hotels_count", 0),
-                            "Total Cost": f"${it.get('total_cost', 0):.0f}" if it.get("total_cost") else "N/A"
-                        })
-                    
-                    if summary_data:
-                        st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
-                    
-                    # Show message if available
-                    for it in st.session_state.optimization_iterations:
-                        if it.get("message"):
-                            st.info(f"**Iteration {it.get('iteration')}:** {it.get('message')}")
-                
-                with debug_tab2:
-                    # Show raw JSON for each iteration
-                    for i, it in enumerate(st.session_state.optimization_iterations):
-                        with st.expander(f"Iteration {it.get('iteration', i+1)} Details"):
-                            st.json(it)
+                history = result.get("optimization_history", [])
+                if history:
+                    st.write(f"**Optimization Steps:**")
+                    for i, it in enumerate(history):
+                        st.json(it)
+    else:
+        st.info("👈 Enter your trip details and click 'Plan New Trip' to get started!")
 
 with col_chat:
-    # Chat interface
-    st.markdown("### 💬 Chat with Your Travel Planner")
+    st.markdown("### 💬 Chat with Your Assistant")
     
-    # Display chat history in a scrollable container
-    chat_container = st.container(height=450)
+    chat_container = st.container(height=500)
     with chat_container:
         if st.session_state.chat_history:
             for msg in st.session_state.chat_history:
@@ -1202,176 +716,88 @@ with col_chat:
                 else:
                     st.markdown(f'<div class="chat-message-bot">🤖 {msg["message"]}</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div style="color: #CCCCCC; text-align: center; padding: 2rem;">👈 Plan a trip to start chatting!</div>', unsafe_allow_html=True)
+            st.caption("Plan a trip first, then chat with me!")
     
-    # Chat input
-    if st.session_state.current_result:
+    if st.session_state.trip_result and not st.session_state.processing_message:
         user_message = st.chat_input("Ask me anything about your trip...")
         
-        if user_message and not st.session_state.waiting_for_response:
-            # Add user message to chat
-            st.session_state.chat_history.append({"role": "user", "message": user_message})
-            st.session_state.waiting_for_response = True
+        current_time = time.time()
+        if user_message and (current_time - st.session_state.last_chat_time) >= RATE_LIMIT_SECONDS:
+            st.session_state.last_chat_time = current_time
+            st.session_state.processing_message = True
             
-            # Process the message
+            # Add user message immediately
+            st.session_state.chat_history.append({"role": "user", "message": user_message})
+            
             with st.spinner("🤔 Thinking..."):
-                response = process_chat_message(
-                    user_message, 
-                    st.session_state.current_result,
-                    st.session_state.current_search_params
+                # Step 1: Determine if function calls are needed
+                process_result = process_chat_message(
+                    user_message,
+                    st.session_state.trip_result,
+                    st.session_state.chat_history[:-1],
+                    st.session_state.current_params
                 )
                 
-                # Check if this is a recommendation request
-                if response.get("type") == "recommendation":
-                    st.session_state.chat_history.append({
-                        "role": "bot", 
-                        "message": f"💡 {response['message']}"
-                    })
-                    
-                    if response.get("action"):
-                        # Update search params based on recommendation
-                        if response['action'] == 'search_hotels':
-                            st.session_state.chat_history.append({
-                                "role": "bot",
-                                "message": "I've found some hotel options. Please use the 'Plan a New Trip' button above with adjusted preferences to see them, or ask me to 'find cheaper flights' instead."
-                            })
-                        elif response['action'] == 'search_flights':
-                            st.session_state.chat_history.append({
-                                "role": "bot",
-                                "message": "I've found some flight options. Please use the 'Plan a New Trip' button above with adjusted preferences to see them, or ask me to 'find better hotels' instead."
-                            })
-                        elif response['action'] == 'adjust_budget':
-                            st.session_state.current_search_params['total_budget'] = response['params']['new_budget']
-                            # Update user_input with new budget
-                            old_input = st.session_state.current_search_params['user_input']
-                            budget_match = re.search(r'\$\d+', old_input)
-                            if budget_match:
-                                st.session_state.current_search_params['user_input'] = old_input.replace(
-                                    budget_match.group(), 
-                                    f'${int(response["params"]["new_budget"])}'
-                                )
-                            st.session_state.chat_history.append({
-                                "role": "bot",
-                                "message": f"Budget updated to ${response['params']['new_budget']:.0f}. Click 'Plan My Trip' again to search with the new budget!"
-                            })
+                function_results = None
+                should_replan = False
                 
-                # Check if this is a modification request
-                elif response.get("type") == "modification":
-                    # Show modification message
-                    st.session_state.chat_history.append({
-                        "role": "bot", 
-                        "message": response['message']
-                    })
+                # Step 2: Execute any function calls
+                if process_result["type"] == "function_calls" and process_result["function_calls"]:
+                    exec_result = execute_functions(
+                        process_result["function_calls"],
+                        st.session_state.current_params
+                    )
                     
-                    # Update search params - can handle multiple changes at once
-                    params_updated = False
+                    if exec_result["results"]:
+                        function_results = exec_result["results"]
                     
-                    # Update budget if specified
-                    if "budget" in response and response['budget'] is not None:
-                        st.session_state.current_search_params['total_budget'] = response['budget']
-                        # Update user_input with new budget
-                        old_input = st.session_state.current_search_params['user_input']
-                        budget_match = re.search(r'\$\d+', old_input)
-                        if budget_match:
-                            st.session_state.current_search_params['user_input'] = old_input.replace(
-                                budget_match.group(), 
-                                f'${int(response["budget"])}'
-                            )
-                        params_updated = True
-                    
-                    # Update strategy if specified
-                    if "strategy" in response and response['strategy'] is not None:
-                        st.session_state.current_search_params['strategy'] = response['strategy']
-                        # Update user_input with new strategy
-                        old_input = st.session_state.current_search_params['user_input']
-                        # Replace the strategy line in user_input
-                        st.session_state.current_search_params['user_input'] = re.sub(
-                            r'Strategy preference:.*?\n',
-                            f'Strategy preference: {response["strategy"]}.\n',
-                            old_input
-                        )
-                        params_updated = True
-                    
-                    # Update preference if specified
-                    if "preference" in response and response['preference'] is not None:
-                        st.session_state.current_search_params['prefer_red_eyes'] = response['preference']
-                        # Update user_input with new preference
-                        old_input = st.session_state.current_search_params['user_input']
-                        if "Prefer red-eye flights." in old_input:
-                            if not response['preference']:
-                                st.session_state.current_search_params['user_input'] = old_input.replace(
-                                    "Prefer red-eye flights.", ""
-                                )
-                        else:
-                            if response['preference']:
-                                st.session_state.current_search_params['user_input'] = old_input + " Prefer red-eye flights."
-                        params_updated = True
-                    
-                    if params_updated:
-                        # Re-run the orchestrator with updated params
-                        new_result_str = run_overarching_bot(st.session_state.current_search_params['user_input'])
+                    if exec_result["updates"]:
+                        for key, value in exec_result["updates"].items():
+                            st.session_state.current_params[key] = value
+                        should_replan = True
+                
+                # Step 3: Replan if needed
+                if should_replan:
+                    with st.spinner("🔄 Updating your trip..."):
                         try:
-                            new_result_data = json.loads(new_result_str)
-                            if isinstance(new_result_data, dict) and "data" in new_result_data:
-                                st.session_state.current_result = new_result_data["data"]
-                                # Update optimization history
-                                st.session_state.optimization_iterations = new_result_data.get("optimization_history", [])
-                                # Get new commentary
-                                new_commentary = new_result_data.get("commentary", "")
-                            else:
-                                st.session_state.current_result = new_result_data
-                                new_commentary = None
+                            new_result = plan_trip(
+                                origin=st.session_state.current_params['origin'],
+                                destination=st.session_state.current_params['destination'],
+                                departure_date=st.session_state.current_params['departure_date'],
+                                return_date=st.session_state.current_params['return_date'],
+                                total_budget=float(st.session_state.current_params['total_budget']),
+                                strategy=Strategy(st.session_state.current_params['strategy']),
+                                prefer_red_eyes=st.session_state.current_params['prefer_red_eyes'],
+                                adults=st.session_state.current_params['adults'],
+                                max_iterations=st.session_state.current_params['max_iterations'],
+                            )
                             
-                            # Save this updated trip to past trips if flights found
-                            if st.session_state.current_result and st.session_state.current_result.get('flights') and len(st.session_state.current_result.get('flights', [])) > 0:
-                                params = st.session_state.current_search_params
-                                date_range = f"{params['departure_date'].strftime('%m/%d')} - {params['return_date'].strftime('%m/%d')}"
-                                trip_record = {
-                                    'origin': params['origin'],
-                                    'destination': params['destination'],
-                                    'date_range': date_range,
-                                    'total_cost': st.session_state.current_result.get('total_cost', 0),
-                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                    'result': st.session_state.current_result,
-                                    'search_params': params.copy(),
-                                    'chat_history': st.session_state.chat_history.copy()
-                                }
-                                st.session_state.past_trips.append(trip_record)
-                            
-                            st.session_state.chat_history.append({
-                                "role": "bot",
-                                "message": "✅ I've updated your trip plan! Check the new options above."
-                            })
-                            
-                            # Add new commentary if available
-                            if new_commentary:
-                                st.session_state.chat_history.append({
-                                    "role": "bot",
-                                    "message": new_commentary
-                                })
-                            
-                            # Add debug info if enabled
-                            if st.session_state.show_debug and st.session_state.optimization_iterations:
-                                st.session_state.chat_history.append({
-                                    "role": "bot",
-                                    "message": f"🔧 Re-optimization used {len(st.session_state.optimization_iterations)} internal iterations."
-                                })
-                                
+                            st.session_state.trip_result = new_result
+                            st.session_state.optimization_iterations = new_result.get("optimization_history", [])
                         except Exception as e:
-                            st.session_state.chat_history.append({
-                                "role": "bot",
-                                "message": f"❌ Sorry, I couldn't update the plan: {str(e)}"
-                            })
-                    
-                else:
-                    # Regular Q&A response
-                    st.session_state.chat_history.append({
-                        "role": "bot", 
-                        "message": response["message"]
-                    })
+                            function_results = [f"Error updating: {str(e)}"]
                 
-                st.session_state.waiting_for_response = False
-                st.rerun()
+                # Step 4: Get natural language response
+                response = get_conversational_response(
+                    user_message,
+                    st.session_state.trip_result,
+                    st.session_state.chat_history[:-1],
+                    function_results
+                )
+                
+                st.session_state.chat_history.append({"role": "assistant", "message": response})
+                
+                # Trim history
+                if len(st.session_state.chat_history) > MAX_CHAT_HISTORY:
+                    st.session_state.chat_history = st.session_state.chat_history[-MAX_CHAT_HISTORY:]
+            
+            st.session_state.processing_message = False
+            st.rerun()
+        
+        elif user_message:
+            wait_time = RATE_LIMIT_SECONDS - (current_time - st.session_state.last_chat_time)
+            if wait_time > 0:
+                st.warning(f"Please wait {wait_time:.1f}s")
 
 
 # ==========================================================
@@ -1380,8 +806,7 @@ with col_chat:
 
 st.markdown("---")
 st.markdown("""
-<div style="text-align: center; color: #FF6B6B; padding: 1rem;">
-    <p>Powered by Amadeus API and OpenAI | © 2026 SJSU CMPE 297 Group 3 - AI Travel Planner</p>
-    <p style="font-size: 0.8rem;">Optimization attempts controlled by slider in Advanced Options (default: 3, max: 20)</p>
+<div style="text-align: center; color: #666; padding: 1rem;">
+    <p>Your Personal AI Travel Assistant | Powered by Amadeus & OpenAI</p>
 </div>
 """, unsafe_allow_html=True)
