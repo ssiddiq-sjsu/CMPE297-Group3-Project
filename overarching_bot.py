@@ -14,6 +14,7 @@ from datetime import datetime
 from flights_bot import search_flights
 from hotels_bot import search_hotels
 from airline_codes import get_airline_with_code, resolve_airline_code
+from hotels_bot import search_hotels, search_hotels_by_rating  # Add search_hotels_by_rating
 
 # ==========================================================
 # TYPES AND ENUMS
@@ -237,6 +238,68 @@ def optimize_trip(
             iterations_used=iterations_used
         )
 
+def find_better_hotel_option(
+    current_hotel: Dict[str, Any],
+    hotels_list: List[Dict[str, Any]],
+    total_budget: float,
+    current_flights_cost: float,
+) -> Optional[Dict[str, Any]]:
+    """
+    Find a better hotel option within budget.
+    Prioritizes higher ratings, then different hotels with same rating.
+    """
+    if not hotels_list or not current_hotel:
+        return None
+    
+    current_rating = current_hotel.get("rating")
+    current_cost = current_hotel.get("total", 0)
+    
+    # Try to get current rating as number
+    try:
+        current_rating_int = int(float(current_rating)) if current_rating else 3
+    except (ValueError, TypeError):
+        current_rating_int = 3
+    
+    remaining_budget = total_budget - current_flights_cost
+    
+    # Filter hotels within budget
+    affordable_hotels = [h for h in hotels_list if h.get("total", float('inf')) <= remaining_budget]
+    
+    if not affordable_hotels:
+        return None
+    
+    # First, look for higher rated hotels
+    higher_rated = []
+    for h in affordable_hotels:
+        h_rating = h.get("rating")
+        try:
+            h_rating_int = int(float(h_rating)) if h_rating else 0
+            if h_rating_int > current_rating_int and h.get("hotelId") != current_hotel.get("hotelId"):
+                higher_rated.append(h)
+        except (ValueError, TypeError):
+            pass
+    
+    if higher_rated:
+        # Sort by rating (highest first) then by price
+        higher_rated.sort(key=lambda x: (-(int(float(x.get("rating", 0)) or 0), x.get("total", float('inf')))))
+        return higher_rated[0]
+    
+    # If no higher rated, try different hotels with same rating
+    same_rating_diff = []
+    for h in affordable_hotels:
+        h_rating = h.get("rating")
+        try:
+            h_rating_int = int(float(h_rating)) if h_rating else 0
+            if h_rating_int == current_rating_int and h.get("hotelId") != current_hotel.get("hotelId"):
+                same_rating_diff.append(h)
+        except (ValueError, TypeError):
+            pass
+    
+    if same_rating_diff:
+        same_rating_diff.sort(key=lambda x: x.get("total", float('inf')))
+        return same_rating_diff[0]
+    
+    return None
 
 def _get_initial_allocation(strategy: Strategy) -> Dict[str, float]:
     """Get initial budget allocation based on strategy."""
@@ -414,6 +477,8 @@ def plan_trip(
     prefer_red_eyes: bool = False,
     adults: int = 1,
     max_iterations: int = 5,
+    find_better_hotel: bool = False,  # Add this
+    current_hotel: Optional[Dict[str, Any]] = None,  # Add this
 ) -> Dict[str, Any]:
     """
     Main trip planning function.
@@ -424,6 +489,8 @@ def plan_trip(
     print(f"💰 Budget: ${total_budget}")
     print(f"🔄 Strategy: {strategy.value}")
     print(f"🔁 Max iterations: {max_iterations}")
+    if find_better_hotel:
+        print(f"🔍 Finding better hotel than current ({current_hotel.get('rating', 'Unknown')}⭐)")
     
     # Search for flights
     flights = search_flights(
@@ -434,13 +501,50 @@ def plan_trip(
         prefer_red_eyes=prefer_red_eyes,
     )
     
-    # Search for hotels
-    hotels = search_hotels(
-        destination=destination,
-        check_in=departure_date,
-        check_out=return_date,
-        adults=adults,
-    )
+    # Search for hotels - use rating filter if finding better hotel
+    if find_better_hotel and current_hotel:
+        # Get current rating
+        try:
+            current_rating = int(float(current_hotel.get("rating", 3)))
+        except (ValueError, TypeError):
+            current_rating = 3
+        
+        # Try higher ratings first
+        hotels = []
+        for target_rating in [5, 4, 3]:
+            if target_rating > current_rating:
+                hotels = search_hotels_by_rating(
+                    destination=destination,
+                    check_in=departure_date,
+                    check_out=return_date,
+                    adults=adults,
+                    min_rating=target_rating,
+                    max_hotels=10,
+                )
+                if hotels:
+                    print(f"Found {len(hotels)} hotels with {target_rating}⭐")
+                    break
+        
+        # If no higher rated, try same rating but different hotels
+        if not hotels:
+            hotels = search_hotels_by_rating(
+                destination=destination,
+                check_in=departure_date,
+                check_out=return_date,
+                adults=adults,
+                min_rating=current_rating,
+                max_hotels=15,
+            )
+            # Filter out current hotel
+            hotels = [h for h in hotels if h.get("hotelId") != current_hotel.get("hotelId")]
+    else:
+        # Normal search
+        hotels = search_hotels(
+            destination=destination,
+            check_in=departure_date,
+            check_out=return_date,
+            adults=adults,
+        )
     
     # Optimize
     result = optimize_trip(
@@ -451,6 +555,7 @@ def plan_trip(
         max_iterations=max_iterations,
     )
     
+    # ... rest of your function remains the same    
     # Format response based on what we found
     if not flights and not hotels:
         status_msg = "❌ No flights or hotels found"

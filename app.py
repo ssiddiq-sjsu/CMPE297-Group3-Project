@@ -1,8 +1,5 @@
 """
-Streamlit GUI for Travel Orchestrator - True Hybrid Architecture
-- Deterministic optimization backend
-- LLM-powered conversational frontend
-- Natural language responses with full context
+Streamlit GUI for Travel Planner - Hybrid Architecture with Natural Responses
 """
 
 import streamlit as st
@@ -20,8 +17,9 @@ load_dotenv()
 # Import orchestrator
 from overarching_bot import plan_trip, Strategy, parse_user_input
 from airline_codes import get_airline_with_code, resolve_airline_code
+from weather import get_weather_forecast
 
-# Initialize OpenAI client (for chat only)
+# Initialize OpenAI client
 client = OpenAI(timeout=30.0)
 
 # Constants
@@ -38,11 +36,10 @@ st.set_page_config(
 )
 
 # ==========================================================
-# CUSTOM CSS (keep your existing CSS)
+# CUSTOM CSS
 # ==========================================================
 st.markdown("""
 <style>
-    /* Keep your existing CSS here */
     .main-header {
         background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
         padding: 2rem;
@@ -67,6 +64,21 @@ st.markdown("""
         border-radius: 20px 20px 20px 5px;
         border: 2px solid #4ECDC4;
         margin: 0.5rem 0;
+    }
+    .weather-card {
+        background: linear-gradient(135deg, #4ECDC4, #45B7AA);
+        padding: 1rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        color: white;
+    }
+    .red-eye-badge {
+        background-color: #FF6B6B;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        display: inline-block;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -177,30 +189,50 @@ CHAT_FUNCTIONS = [
         }
     },
     {
-    "type": "function",
-    "function": {
-        "name": "update_preferences",
-        "description": "Update travel preferences like red-eye flights",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "prefer_red_eyes": {
-                    "type": "boolean",
-                    "description": "Whether to prefer red-eye flights"
-                }
-            },
-            "required": ["prefer_red_eyes"]
+        "type": "function",
+        "function": {
+            "name": "update_preferences",
+            "description": "Update travel preferences like red-eye flights",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prefer_red_eyes": {
+                        "type": "boolean",
+                        "description": "Whether to prefer red-eye flights (overnight flights between 9PM-5AM)"
+                    }
+                },
+                "required": ["prefer_red_eyes"]
+            }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_better_hotel",
+            "description": "Find a better hotel than the current one (higher rated or different option)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "preference": {
+                        "type": "string",
+                        "enum": ["higher_rated", "different", "any"],
+                        "description": "What kind of better hotel to look for"
+                    }
+                },
+                "required": ["preference"]
+            }
+        }
     }
 ]
 
 
-def execute_functions(function_calls: list, current_params: dict) -> dict:
+def execute_functions(function_calls: list, current_params: dict, trip_result: dict) -> dict:
     """Execute multiple function calls and return updates."""
     all_updates = {}
     all_results = []
     should_replan = False
+    find_better = False
+    current_hotel = None
     
     for func_call in function_calls:
         function_name = func_call["function"]
@@ -210,7 +242,8 @@ def execute_functions(function_calls: list, current_params: dict) -> dict:
             new_budget = arguments.get("new_budget")
             if new_budget:
                 all_updates["total_budget"] = float(new_budget)
-                all_results.append(f"budget changed to ${new_budget}")
+                all_results.append(f"BUDGET_CHANGED:${new_budget}")
+                should_replan = True
         
         elif function_name == "change_strategy":
             new_strategy = arguments.get("new_strategy")
@@ -221,13 +254,15 @@ def execute_functions(function_calls: list, current_params: dict) -> dict:
                     'splurge_flight': 'Splurge on Flights',
                     'splurge_hotel': 'Splurge on Hotel'
                 }.get(new_strategy, new_strategy)
-                all_results.append(f"strategy changed to {strategy_display}")
+                all_results.append(f"STRATEGY_CHANGED:{strategy_display}")
+                should_replan = True
         
         elif function_name == "adjust_iterations":
             new_iterations = arguments.get("new_iterations")
             if new_iterations:
                 all_updates["max_iterations"] = int(new_iterations)
-                all_results.append(f"optimization iterations set to {new_iterations}")
+                all_results.append(f"ITERATIONS_CHANGED:{new_iterations}")
+                should_replan = True
         
         elif function_name == "update_dates":
             departure = arguments.get("departure_date")
@@ -236,23 +271,36 @@ def execute_functions(function_calls: list, current_params: dict) -> dict:
                 all_updates["departure_date"] = departure
             if return_date:
                 all_updates["return_date"] = return_date
-            all_results.append(f"dates updated to {departure} to {return_date}")
-        
-        elif function_name in ["search_flights", "search_hotels"]:
+            all_results.append(f"DATES_CHANGED:{departure} to {return_date}")
             should_replan = True
-            all_results.append(f"searching for new {function_name.replace('_', ' ')}")
-
+        
         elif function_name == "update_preferences":
             prefer_red_eyes = arguments.get("prefer_red_eyes")
             if prefer_red_eyes is not None:
                 all_updates["prefer_red_eyes"] = prefer_red_eyes
-                all_results.append(f"red-eye preference set to {'enabled' if prefer_red_eyes else 'disabled'}")
+                status = "enabled" if prefer_red_eyes else "disabled"
+                all_results.append(f"REDEYE_{status.upper()}")
                 should_replan = True
+        
+        elif function_name == "find_better_hotel":
+            preference = arguments.get("preference", "any")
+            find_better = True
+            current_hotel = trip_result.get("data", {}).get("hotel", {})
+            current_rating = current_hotel.get("rating", "Unknown")
+            all_results.append(f"FIND_BETTER_HOTEL: current rating {current_rating}⭐")
+            all_updates["find_better_hotel"] = True
+            should_replan = True
+        
+        elif function_name in ["search_flights", "search_hotels"]:
+            should_replan = True
+            all_results.append(f"SEARCH_NEW_{function_name.upper()}")
     
     return {
         "updates": all_updates,
         "results": all_results,
-        "should_replan": should_replan or bool(all_updates)
+        "should_replan": should_replan,
+        "find_better": find_better,
+        "current_hotel": current_hotel
     }
 
 
@@ -266,6 +314,7 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
     
     # Format flight information nicely
     flight_info = []
+    red_eye_count = 0
     for i, f in enumerate(flights, 1):
         direction = "Outbound" if i == 1 else "Return"
         airline = f.get('airline', 'Unknown')
@@ -275,7 +324,22 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
         else:
             airline_display = airline
         
-        flight_info.append(f"{direction} Flight: {airline_display} {f.get('flight_number', '')}")
+        # Check if red-eye
+        dep = f.get('departure_date', '')
+        is_red_eye = False
+        if " " in dep:
+            try:
+                t = datetime.strptime(dep.split(" ")[1][:5], "%H:%M")
+                hour = t.hour + t.minute / 60
+                is_red_eye = hour >= 21 or hour < 5
+                if is_red_eye:
+                    red_eye_count += 1
+            except:
+                pass
+        
+        red_eye_marker = " 🌙" if is_red_eye else ""
+        
+        flight_info.append(f"{direction} Flight{red_eye_marker}: {airline_display} {f.get('flight_number', '')}")
         flight_info.append(f"  • Depart: {f.get('departure_date', 'Unknown')}")
         flight_info.append(f"  • Arrive: {f.get('arrival_date', 'Unknown')}")
         flight_info.append(f"  • Duration: {f.get('duration', 'Unknown')}")
@@ -291,6 +355,12 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
     else:
         hotel_info.append("No hotel selected yet.")
     
+    # Add weather if available
+    weather_info = None
+    if 'weather_cache' in st.session_state:
+        dest = metadata.get('destination', '')
+        weather_info = st.session_state.weather_cache.get(dest)
+    
     context = {
         "current_trip": {
             "origin": metadata.get("origin", "Unknown"),
@@ -301,46 +371,64 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
             "remaining_budget": f"${trip_data.get('data', {}).get('remaining_budget', 0):.2f}",
             "strategy": metadata.get('strategy', 'cheapest_overall').replace('_', ' ').title(),
             "optimization_status": trip_data.get('data', {}).get('status', 'unknown'),
-            "iterations_used": f"{trip_data.get('data', {}).get('iterations_used', 0)}/{metadata.get('max_iterations', 5)}"
+            "iterations_used": f"{trip_data.get('data', {}).get('iterations_used', 0)}/{metadata.get('max_iterations', 5)}",
+            "red_eye_enabled": metadata.get('prefer_red_eyes', False),
+            "red_eye_flights_found": red_eye_count,
+            "weather": weather_info
         },
         "flights": "\n".join(flight_info) if flight_info else "No flights found.",
         "hotel": "\n".join(hotel_info) if hotel_info else "No hotel found."
     }
+    
+    # Parse function results for better context
+    upgrade_info = None
+    if function_results:
+        for result in function_results:
+            if "UPGRADE_SUCCESS" in result:
+                # Extract ratings from result
+                parts = result.split("Found a ")
+                if len(parts) > 1:
+                    upgrade_info = parts[1]
+            elif "FOUND_ALTERNATIVE" in result:
+                upgrade_info = "alternative"
+            elif "NO_BETTER_HOTEL" in result:
+                upgrade_info = "none_found"
     
     system_prompt = f"""You are a friendly and knowledgeable travel assistant. Your role is to help users plan their trip by having natural conversations.
 
 CURRENT TRIP CONTEXT:
 {json.dumps(context, indent=2)}
 
-You have access to functions that can modify the trip parameters. When users want to make changes:
-- Adjust budget → They want to spend more or less
-- Change strategy → They want to prioritize flights or hotels
-- Adjust iterations → They want more optimization attempts
-- Update dates → They want different travel dates
-- Search for new options → They want to explore alternatives
+WEATHER INFORMATION:
+{json.dumps(weather_info, indent=2) if weather_info else "No weather data available"}
+
+RECENT ACTIONS RESULTS:
+{json.dumps(function_results, indent=2) if function_results else "No recent changes"}
+
+UPGRADE STATUS: {upgrade_info if upgrade_info else "No upgrade requested"}
 
 Guidelines for your responses:
 1. Be conversational and friendly - use emojis appropriately
 2. When users ask questions, provide helpful answers using the context
-3. If they ask for something you don't have (like hotel addresses), explain what you can do instead
-4. After making changes, explain what you did and what will happen next
+3. If they ask for something you don't have, explain what you can do instead
+4. After making changes, explain what happened in a natural way
 5. Keep responses concise but warm - 2-3 sentences usually
 6. If they're asking about flight times, reference the specific flights
-7. Celebrate when we find a good deal within budget!
+7. If weather info is available, mention it when relevant
+8. If red-eye is enabled and flights found, mention you found overnight options
+9. If no red-eye flights available, suggest they try different dates
+10. When finding better hotels:
+    - If UPGRADE_SUCCESS: Be excited! Mention the rating improvement
+    - If FOUND_ALTERNATIVE: Mention you found another option with same rating
+    - If NO_BETTER_HOTEL: Explain no better options found and suggest increasing budget
+    - Don't just say "searching" - respond to what actually happened
 
 Remember: You're helping a real person plan their vacation. Be excited for them!"""
     
     messages = [
         {"role": "system", "content": system_prompt},
-        *[{"role": m["role"], "content": m["message"]} for m in chat_history[-8:]],  # Last 8 messages for context
+        *[{"role": m["role"], "content": m["message"]} for m in chat_history[-8:]],
     ]
-    
-    # If we have function results to report, add them as a system note
-    if function_results:
-        messages.append({
-            "role": "system", 
-            "content": f"Note to you: The following changes were just made: {', '.join(function_results)}. Acknowledge these changes in your response."
-        })
     
     messages.append({"role": "user", "content": user_message})
     
@@ -349,7 +437,7 @@ Remember: You're helping a real person plan their vacation. Be excited for them!
             model="gpt-3.5-turbo",
             messages=messages,
             max_tokens=300,
-            temperature=0.7,  # Slightly higher temperature for more natural responses
+            temperature=0.7,
             timeout=10
         )
         
@@ -374,6 +462,7 @@ def process_chat_message(user_message: str, trip_data: dict, chat_history: list,
             "total_cost": trip_data.get("data", {}).get("total_cost", 0),
             "iterations_used": trip_data.get("data", {}).get("iterations_used", 0),
             "max_iterations": trip_data.get("metadata", {}).get("max_iterations", 5),
+            "prefer_red_eyes": current_params.get("prefer_red_eyes", False)
         }
     }
     
@@ -389,6 +478,8 @@ Available functions:
 - change_strategy: When user wants to change allocation strategy
 - adjust_iterations: When user wants to change optimization iterations
 - update_dates: When user wants to change travel dates
+- update_preferences: When user wants to enable/disable red-eye flights
+- find_better_hotel: When user says 'find better hotel', 'better hotel', 'upgrade hotel'
 
 If the user is just asking a question or having a conversation, do NOT call any functions.
 Only call functions when they explicitly want to make changes to the trip.
@@ -450,6 +541,8 @@ if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'optimization_iterations' not in st.session_state:
     st.session_state.optimization_iterations = []
+if 'weather_cache' not in st.session_state:
+    st.session_state.weather_cache = {}
 if 'current_params' not in st.session_state:
     st.session_state.current_params = {
         'origin': 'San Francisco',
@@ -477,7 +570,7 @@ if 'processing_message' not in st.session_state:
 st.markdown("""
 <div class="main-header">
     <h1>✈️ AI TRAVEL PLANNER</h1>
-    <p>Your Personal Travel Assistant</p>
+    <p>Your Personal Travel Assistant with Natural Conversations</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -509,6 +602,8 @@ with st.sidebar:
         valid_dates = False
     else:
         valid_dates = True
+        nights = (return_date - departure).days
+        st.caption(f"📅 {nights} nights")
     
     total_budget = st.number_input(
         "Budget ($)",
@@ -534,9 +629,12 @@ with st.sidebar:
     col3, col4 = st.columns(2)
     with col3:
         prefer_red_eyes = st.checkbox(
-            "Prefer Red-Eye",
+            "🌙 Prefer Red-Eye",
             value=st.session_state.current_params['prefer_red_eyes']
         )
+        if prefer_red_eyes != st.session_state.current_params['prefer_red_eyes']:
+            st.session_state.current_params['prefer_red_eyes'] = prefer_red_eyes
+            st.rerun()
     with col4:
         adults = st.number_input(
             "Adults",
@@ -552,7 +650,7 @@ with st.sidebar:
         value=st.session_state.current_params['max_iterations']
     )
     
-    show_debug = st.checkbox("Show Debug Info", value=st.session_state.show_debug)
+    show_debug = st.checkbox("🔧 Show Debug Info", value=st.session_state.show_debug)
     st.session_state.show_debug = show_debug
     
     if st.button("🔍 Plan New Trip", use_container_width=True, disabled=not valid_dates):
@@ -585,7 +683,10 @@ with st.sidebar:
                 st.session_state.trip_result = result
                 st.session_state.optimization_iterations = result.get("optimization_history", [])
                 
-                # Get a warm welcome from the assistant
+                # Clear old weather and fetch new
+                st.session_state.weather_cache = {}
+                
+                # Get a warm welcome
                 welcome_message = get_conversational_response(
                     "I just planned my first trip. Can you help me with it?",
                     result,
@@ -637,24 +738,44 @@ with col_main:
                 status = data.get("status", "unknown")
                 st.metric("Status", status.replace("_", " ").title())
         
+        # Red-eye indicator
+        if metadata.get('prefer_red_eyes', False):
+            st.markdown('<span class="red-eye-badge">🌙 Red-eye mode enabled</span>', unsafe_allow_html=True)
+        
         # Flights
         st.markdown("### ✈️ Your Flights")
         flights = data.get('flights', [])
         if flights:
+            red_eye_count = 0
             for i, flight in enumerate(flights, 1):
                 airline = flight.get('airline', 'Unknown')
                 airline_code = flight.get('airline_code', '')
                 flight_num = flight.get('flight_number', '')
+                dep = flight.get('departure_date', '')
+                
+                # Check if red-eye
+                is_red_eye = False
+                if " " in dep:
+                    try:
+                        t = datetime.strptime(dep.split(" ")[1][:5], "%H:%M")
+                        hour = t.hour + t.minute / 60
+                        is_red_eye = hour >= 21 or hour < 5
+                        if is_red_eye:
+                            red_eye_count += 1
+                    except:
+                        pass
                 
                 if airline_code and airline != airline_code:
                     airline_display = f"{airline} ({airline_code})"
                 else:
                     airline_display = airline
                 
+                red_eye_badge = " 🌙" if is_red_eye else ""
+                
                 with st.container():
                     cols = st.columns([2, 1, 1, 1])
                     with cols[0]:
-                        st.markdown(f"**{airline_display}**")
+                        st.markdown(f"**{airline_display}{red_eye_badge}**")
                         st.caption(f"{flight_num} • {flight.get('home_airport')} → {flight.get('destination')}")
                     with cols[1]:
                         st.markdown(f"Depart\n{flight.get('departure_date', 'N/A')}")
@@ -663,6 +784,9 @@ with col_main:
                     with cols[3]:
                         st.markdown(f"**${flight.get('cost', 0):.2f}**")
                     st.divider()
+            
+            if metadata.get('prefer_red_eyes', False) and red_eye_count == 0:
+                st.warning("No red-eye flights available for this route. Try different dates!")
         else:
             st.info("No flights found for this route")
         
@@ -682,6 +806,37 @@ with col_main:
                 st.markdown(f"**${hotel.get('total', 0):.2f}**")
         else:
             st.info("No hotel found")
+        
+        # Weather
+        if hotel or flights:
+            st.markdown("### 🌤️ Destination Weather")
+            with st.spinner("Checking forecast..."):
+                dest_city = metadata.get('destination', 'New York City')
+                arrival_date = metadata.get('departure_date')
+                
+                city_for_weather = dest_city.split(',')[0].strip()
+                
+                if dest_city not in st.session_state.weather_cache:
+                    weather = get_weather_forecast(city_for_weather, arrival_date)
+                    if weather:
+                        st.session_state.weather_cache[dest_city] = weather
+                else:
+                    weather = st.session_state.weather_cache[dest_city]
+                
+                if weather:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Temperature", f"{weather['temperature']}°F", 
+                                 help="Forecast for arrival day")
+                    with col2:
+                        st.metric("Conditions", f"{weather['emoji']} {weather['description']}")
+                    with col3:
+                        st.metric("Wind", f"{weather['wind']} mph")
+                    
+                    if weather.get('humidity'):
+                        st.caption(f"Humidity: {weather['humidity']}%")
+                else:
+                    st.caption("🌡️ Weather forecast unavailable")
         
         # Debug section
         if st.session_state.show_debug:
@@ -740,17 +895,23 @@ with col_chat:
                 
                 function_results = None
                 should_replan = False
+                find_better = False
+                current_hotel_data = None
                 
                 # Step 2: Execute any function calls
                 if process_result["type"] == "function_calls" and process_result["function_calls"]:
                     exec_result = execute_functions(
                         process_result["function_calls"],
-                        st.session_state.current_params
+                        st.session_state.current_params,
+                        st.session_state.trip_result
                     )
                     
-                    if exec_result["results"]:
-                        function_results = exec_result["results"]
+                    # Store function results but DON'T add to chat yet
+                    function_results = exec_result.get("results", [])
+                    find_better = exec_result.get("find_better", False)
+                    current_hotel_data = exec_result.get("current_hotel")
                     
+                    # Update params
                     if exec_result["updates"]:
                         for key, value in exec_result["updates"].items():
                             st.session_state.current_params[key] = value
@@ -770,14 +931,45 @@ with col_chat:
                                 prefer_red_eyes=st.session_state.current_params['prefer_red_eyes'],
                                 adults=st.session_state.current_params['adults'],
                                 max_iterations=st.session_state.current_params['max_iterations'],
+                                find_better_hotel=find_better,
+                                current_hotel=current_hotel_data if find_better else None
                             )
+                            
+                            # Enhance function results with upgrade information
+                            if find_better and current_hotel_data:
+                                new_hotel = new_result.get("data", {}).get("hotel", {})
+                                if new_hotel and new_hotel.get("hotelId") != current_hotel_data.get("hotelId"):
+                                    old_rating = current_hotel_data.get("rating", "Unknown")
+                                    new_rating = new_hotel.get("rating", "Unknown")
+                                    
+                                    try:
+                                        old_int = int(float(old_rating)) if old_rating else 0
+                                        new_int = int(float(new_rating)) if new_rating else 0
+                                    except:
+                                        old_int = 0
+                                        new_int = 0
+                                    
+                                    if new_int > old_int:
+                                        function_results.append(f"UPGRADE_SUCCESS: Found a {new_rating}⭐ hotel (was {old_rating}⭐)")
+                                    elif new_int == old_int:
+                                        function_results.append(f"FOUND_ALTERNATIVE: Found another {new_rating}⭐ hotel")
+                                    else:
+                                        function_results.append("FOUND_OPTION: Found a different hotel")
+                                else:
+                                    function_results.append("NO_BETTER_HOTEL: Could not find better hotel within budget")
                             
                             st.session_state.trip_result = new_result
                             st.session_state.optimization_iterations = new_result.get("optimization_history", [])
+                            
+                            # Clear weather cache for new search
+                            if 'weather_cache' in st.session_state:
+                                st.session_state.weather_cache = {}
+                                
                         except Exception as e:
                             function_results = [f"Error updating: {str(e)}"]
+                            print(f"Replan error: {e}")
                 
-                # Step 4: Get natural language response
+                # Step 4: Get natural language response (this will include upgrade info)
                 response = get_conversational_response(
                     user_message,
                     st.session_state.trip_result,
@@ -807,6 +999,7 @@ with col_chat:
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; padding: 1rem;">
-    <p>Your Personal AI Travel Assistant | Powered by Amadeus & OpenAI</p>
+    <p>Your Personal AI Travel Assistant | Powered by Amadeus, OpenAI & OpenWeatherMap</p>
+    <p style="font-size: 0.8rem;">🌙 Red-eye flights • ⭐ Hotel upgrades • 💬 Natural conversations</p>
 </div>
 """, unsafe_allow_html=True)

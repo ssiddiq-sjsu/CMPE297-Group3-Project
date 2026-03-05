@@ -119,8 +119,8 @@ def _normalize_offer(offer: dict, origin_code: str, dest_code: str, direction: s
             "arrival_date": arr_str,
             "return_date": arr_str if direction == "return" else None,
             "cost": price,
-            "airline": airline_name,  # Now using full name
-            "airline_code": carrier_code,  # Keep original code
+            "airline": airline_name,
+            "airline_code": carrier_code,
             "flight_number": flight_number,
             "duration": duration,
             "direction": direction,
@@ -204,7 +204,7 @@ def search_flights(origin_iata: str, destination_iata: str, date: str) -> List[D
             destinationLocationCode=destination_iata,
             departureDate=date,
             adults=1,
-            max=10,
+            max=20,  # Increased to get more options for filtering
         )
         print(f"Found {len(response.data)} flights")
         return response.data or []
@@ -217,6 +217,20 @@ def search_flights(origin_iata: str, destination_iata: str, date: str) -> List[D
         return []
 
 
+def is_red_eye_flight(departure_datetime: str) -> bool:
+    """Check if a flight is a red-eye (between 9PM and 5AM)."""
+    if " " not in departure_datetime:
+        return False
+    try:
+        time_str = departure_datetime.split(" ")[1][:5]
+        t = datetime.strptime(time_str, "%H:%M")
+        hour = t.hour + t.minute / 60
+        # Red-eye flights are between 9 PM and 5 AM
+        return hour >= 21 or hour < 5
+    except (ValueError, IndexError):
+        return False
+
+
 def query_flights(
     origin_code: str,
     destination: str,
@@ -227,6 +241,9 @@ def query_flights(
 ) -> List[Dict[str, Any]]:
     """
     Query Amadeus for flight offers (outbound and optionally return).
+    If prefer_red_eyes=True:
+        - Outbound: Only returns red-eye flights (9PM-5AM)
+        - Return: Returns all flights (people prefer daytime returns)
     Returns a list of normalized flight dicts.
     """
     if not _amadeus:
@@ -234,6 +251,8 @@ def query_flights(
         return []
         
     print(f"\n🔍 Querying flights: {origin_code} → {destination} on {departure_date}")
+    if prefer_red_eyes:
+        print("🌙 Red-eye preference enabled - filtering outbound for overnight flights")
     
     # Resolve origin if needed
     origin_iata = origin_code
@@ -258,8 +277,7 @@ def query_flights(
     # Search outbound flights
     outbound_raw = search_flights(origin_iata, dest_iata, departure_date)
     
-    flights = []
-    
+    outbound_flights = []
     # Process outbound flights
     for offer in outbound_raw:
         if max_price is not None:
@@ -274,9 +292,10 @@ def query_flights(
                 
         f = _normalize_offer(offer, origin_iata, dest_iata, "outbound")
         if f:
-            flights.append(f)
+            outbound_flights.append(f)
     
-    # Search return flights if requested
+    # Process return flights if requested
+    return_flights = []
     if return_date:
         return_raw = search_flights(dest_iata, origin_iata, return_date)
         
@@ -293,27 +312,34 @@ def query_flights(
                     
             f = _normalize_offer(offer, dest_iata, origin_iata, "return")
             if f:
-                flights.append(f)
+                return_flights.append(f)
     
-    # Apply red-eye preference if requested
-    if prefer_red_eyes and flights:
-        def red_eye_score(flight):
-            dep = flight.get("departure_date", "") or ""
-            if " " in dep:
-                try:
-                    t = datetime.strptime(dep.split(" ")[1][:5], "%H:%M")
-                    h = t.hour + t.minute / 60
-                    # Red-eye flights are between 9 PM and 5 AM
-                    if h >= 21 or h < 5:
-                        return 0  # Preferred
-                    return 1  # Not preferred
-                except ValueError:
-                    pass
-            return 1
-            
-        flights.sort(key=lambda x: (red_eye_score(x), x.get("cost", float('inf'))))
-    else:
-        flights.sort(key=lambda x: x.get("cost", float('inf')))
+    # Apply red-eye filtering if preferred
+    if prefer_red_eyes:
+        # Filter outbound for red-eye only
+        red_eye_outbound = []
+        for flight in outbound_flights:
+            if is_red_eye_flight(flight.get("departure_date", "")):
+                red_eye_outbound.append(flight)
+        
+        if red_eye_outbound:
+            print(f"✅ Found {len(red_eye_outbound)} red-eye outbound flights")
+            outbound_flights = red_eye_outbound
+        else:
+            print("❌ No red-eye outbound flights found")
+            outbound_flights = []
+        
+        # Return flights - keep all (people prefer daytime returns)
+        print(f"✅ Keeping all {len(return_flights)} return flights (daytime preferred)")
     
-    print(f"Returning {len(flights)} normalized flights")
-    return flights
+    # Sort outbound by cost
+    outbound_flights.sort(key=lambda x: x.get("cost", float('inf')))
+    
+    # Sort return by cost
+    return_flights.sort(key=lambda x: x.get("cost", float('inf')))
+    
+    # Combine results
+    all_flights = outbound_flights + return_flights
+    
+    print(f"Returning {len(all_flights)} flights ({len(outbound_flights)} outbound, {len(return_flights)} return)")
+    return all_flights

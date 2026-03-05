@@ -1,5 +1,5 @@
 """
-Hotel search helper module using Amadeus API.
+Hotel search helper module using Amadeus API with rating filtering.
 Credentials read from environment variables.
 """
 
@@ -167,8 +167,14 @@ def amadeus_get(
     return {"data": []}
 
 
-def get_hotel_ids(city_code: str, max_ids: int = 15) -> List[str]:
-    """Return hotelIds near the city code."""
+def get_hotel_ids_by_rating(city_code: str, min_rating: int = 3, max_ids: int = 20) -> List[Dict[str, Any]]:
+    """
+    Get hotel IDs near the city code filtered by minimum star rating.
+    Returns list of hotels with their IDs and ratings.
+    """
+    # Convert rating to string format expected by Amadeus (1,2,3,4,5)
+    rating_param = ",".join([str(r) for r in range(min_rating, 6)])
+    
     resp = amadeus_get(
         "/v1/reference-data/locations/hotels/by-city",
         params={
@@ -176,17 +182,23 @@ def get_hotel_ids(city_code: str, max_ids: int = 15) -> List[str]:
             "radius": 10,
             "radiusUnit": "KM",
             "hotelSource": "ALL",
+            "ratings": rating_param,  # Filter by star rating
         },
         timeout=10,
         retries=2,
     )
 
-    hotel_ids = []
+    hotels = []
     for hotel in resp.get("data", []):
         if isinstance(hotel, dict) and hotel.get("hotelId"):
-            hotel_ids.append(str(hotel["hotelId"]).strip())
+            hotels.append({
+                "hotelId": str(hotel["hotelId"]).strip(),
+                "name": hotel.get("name", "Unknown Hotel"),
+                "rating": hotel.get("rating"),
+                "cityCode": city_code
+            })
     
-    return hotel_ids[:max_ids]
+    return hotels[:max_ids]
 
 
 def get_offers_for_hotel_ids(
@@ -252,26 +264,34 @@ def get_offers_for_hotel_ids(
     return results[:max_hotels]
 
 
-def search_hotels_for_trip(
+def search_hotels_by_rating(
     destination: str,
     check_in: str,
     check_out: str,
     adults: int = 1,
+    min_rating: int = 3,
     max_hotels: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Main entry point: destination + dates -> list of hotel offers."""
-    print(f"\n🔍 Searching hotels in {destination} from {check_in} to {check_out}")
+    """
+    Search for hotels filtered by minimum star rating.
+    Returns list of hotel offers.
+    """
+    print(f"\n🔍 Searching hotels in {destination} with min rating {min_rating}⭐")
     
     city_code = resolve_hotel_city_code(destination)
     if not city_code:
         print(f"Could not resolve city code for: {destination}")
         return []
 
-    hotel_ids = get_hotel_ids(city_code, max_ids=15)
-    if not hotel_ids:
-        print(f"No hotel IDs found for {city_code}")
+    # Get hotels with minimum rating
+    hotels = get_hotel_ids_by_rating(city_code, min_rating, max_ids=20)
+    if not hotels:
+        print(f"No hotels found with min rating {min_rating}⭐")
         return []
 
+    # Get hotel IDs for offer search
+    hotel_ids = [h["hotelId"] for h in hotels]
+    
     offers = get_offers_for_hotel_ids(
         hotel_ids=hotel_ids,
         check_in=check_in,
@@ -280,5 +300,31 @@ def search_hotels_for_trip(
         max_hotels=max_hotels,
     )
     
-    print(f"Found {len(offers)} hotel offers")
+    # Add rating info to offers
+    rating_map = {h["hotelId"]: h["rating"] for h in hotels}
+    for offer in offers:
+        hotel_id = offer.get("hotelId")
+        if hotel_id in rating_map:
+            offer["rating"] = rating_map[hotel_id]
+    
+    print(f"Found {len(offers)} hotel offers with min rating {min_rating}⭐")
     return offers
+
+
+# Legacy function for backward compatibility
+def search_hotels_for_trip(
+    destination: str,
+    check_in: str,
+    check_out: str,
+    adults: int = 1,
+    max_hotels: int = 5,
+) -> List[Dict[str, Any]]:
+    """Legacy function - searches all hotels without rating filter."""
+    return search_hotels_by_rating(
+        destination=destination,
+        check_in=check_in,
+        check_out=check_out,
+        adults=adults,
+        min_rating=1,  # Include all hotels
+        max_hotels=max_hotels,
+    )
