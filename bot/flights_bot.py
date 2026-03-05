@@ -16,7 +16,7 @@ if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY is not set")
 
 _client = OpenAI(api_key=OPENAI_API_KEY)
-
+ 
 TOOLS = [
     {
         "type": "function",

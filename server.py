@@ -65,6 +65,9 @@ if not OPENAI_API_KEY:
 # AMADEUS_API_KEY = os.getenv("AMADEUS_API_KEY")
 # if not AMADEUS_API_KEY:
 #     raise ValueError("AMADEUS_API_KEY is not set")
+PHQ_API_KEY = os.getenv("PHQ_API_KEY")
+if not PHQ_API_KEY:
+    raise ValueError("PHQ_API_KEY is not set")
 
 
 # --- Stub / uncompleted functions (to be implemented later) ---
@@ -126,10 +129,26 @@ def search_hotels(destination: str, check_in: str, check_out: str, budget_max: f
     return None
 
 
-def search_activities(destination: str, activity_types: list[str], budget_max: float):
-    """Search for activities based on selected types. Not implemented; returns placeholder."""
-    # TODO: Integrate activities/experiences API
-    return None
+def search_activities(
+        destination: str, 
+        activity_types: list[str], 
+        budget_max: float,
+        start_date: str = "",
+        end_date: str = ""
+        ):
+    """Search for activities via PredictHQ agent
+    Returns per-day list of activity name lists"""
+    try:
+        from bot.events_bot import run_agent
+        return run_agent(
+            destination=destination,
+            start_date=start_date,
+            end_date=end_date,
+            activity_types=list(activity_types or []),
+            budget_max=float(budget_max)
+        )
+    except Exception:
+        return None
 
 
 def handle_additional_info(info: str) -> None:
@@ -198,7 +217,7 @@ def build_trip_plan(trip_data: dict) -> dict:
     # - rating: float
     # None for no activities
     # currently only name is required / used
-    raw_activities = search_activities(destination, activity_types, total_budget)
+    raw_activities = search_activities(destination, activity_types, total_budget, start_date=dep_date, end_date=ret_date)
 
     # Flights: list of { "description": str, "cost": float }
     flights = []
