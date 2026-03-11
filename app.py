@@ -1,5 +1,8 @@
 """
-Streamlit GUI for Travel Planner - Hybrid Architecture with Natural Responses
+Streamlit GUI for Travel Planner - Hybrid Architecture with Natural Events
+- Deterministic optimization backend
+- LLM-powered conversational frontend
+- Events panel with pure LLM responses
 """
 
 import streamlit as st
@@ -18,6 +21,7 @@ load_dotenv()
 from overarching_bot import plan_trip, Strategy, parse_user_input
 from airline_codes import get_airline_with_code, resolve_airline_code
 from weather import get_weather_forecast
+from events_bot import search_events
 
 # Initialize OpenAI client
 client = OpenAI(timeout=30.0)
@@ -79,6 +83,30 @@ st.markdown("""
         border-radius: 20px;
         font-size: 0.8rem;
         display: inline-block;
+    }
+    .events-container {
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 10px;
+    margin: 10px 0;
+    border: 1px solid #4ECDC4;
+    }
+    .event-day {
+        margin-bottom: 15px;
+        padding: 10px;
+        background: white;
+        border-radius: 8px;
+        border-left: 3px solid #4ECDC4;
+    }
+    .event-item {
+        padding: 5px 0;
+        border-bottom: 1px solid #eee;
+        font-size: 0.9rem;
+    }
+    .event-item:last-child {
+        border-bottom: none;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -222,7 +250,25 @@ CHAT_FUNCTIONS = [
                 "required": ["preference"]
             }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_events",
+            "description": "Search for local events, concerts, festivals, sports, food events, or things to do during your trip",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "preferences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "What kind of events? Examples: ['music'], ['sports', 'food'], ['family', 'outdoor'], ['concerts', 'festivals']",
+                    }
+                },
+                "required": [],
+            },
+        }
+    }  
 ]
 
 
@@ -290,6 +336,29 @@ def execute_functions(function_calls: list, current_params: dict, trip_result: d
             all_results.append(f"FIND_BETTER_HOTEL: current rating {current_rating}⭐")
             all_updates["find_better_hotel"] = True
             should_replan = True
+        
+        elif function_name == "search_events":
+            preferences = arguments.get("preferences", [])
+            
+            # Search for events (returns raw data only)
+            events_result = search_events(
+                destination=st.session_state.current_params['destination'],
+                start_date=st.session_state.current_params['departure_date'],
+                end_date=st.session_state.current_params['return_date'],
+                preferences=preferences,
+                exclude_ids=st.session_state.excluded_event_ids,
+                max_events=8,
+            )
+            
+            # Store events for panel display
+            if events_result["has_events"]:
+                st.session_state.current_events = events_result["panel_html"]
+                st.session_state.current_events_data = events_result
+                st.session_state.excluded_event_ids = events_result["event_ids"]
+            
+            # Return RAW DATA - LLM will generate response
+            all_results.append(json.dumps(events_result))
+            should_replan = False
         
         elif function_name in ["search_flights", "search_hotels"]:
             should_replan = True
@@ -361,6 +430,19 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
         dest = metadata.get('destination', '')
         weather_info = st.session_state.weather_cache.get(dest)
     
+    # Parse any event data from function results
+    event_data = None
+    if function_results:
+        for result in function_results:
+            try:
+                # Try to parse as JSON (event data)
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and "has_events" in parsed:
+                    event_data = parsed
+                    break
+            except:
+                pass
+    
     context = {
         "current_trip": {
             "origin": metadata.get("origin", "Unknown"),
@@ -377,22 +459,9 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
             "weather": weather_info
         },
         "flights": "\n".join(flight_info) if flight_info else "No flights found.",
-        "hotel": "\n".join(hotel_info) if hotel_info else "No hotel found."
+        "hotel": "\n".join(hotel_info) if hotel_info else "No hotel found.",
+        "events": event_data  # Add event data to context
     }
-    
-    # Parse function results for better context
-    upgrade_info = None
-    if function_results:
-        for result in function_results:
-            if "UPGRADE_SUCCESS" in result:
-                # Extract ratings from result
-                parts = result.split("Found a ")
-                if len(parts) > 1:
-                    upgrade_info = parts[1]
-            elif "FOUND_ALTERNATIVE" in result:
-                upgrade_info = "alternative"
-            elif "NO_BETTER_HOTEL" in result:
-                upgrade_info = "none_found"
     
     system_prompt = f"""You are a friendly and knowledgeable travel assistant. Your role is to help users plan their trip by having natural conversations.
 
@@ -402,10 +471,19 @@ CURRENT TRIP CONTEXT:
 WEATHER INFORMATION:
 {json.dumps(weather_info, indent=2) if weather_info else "No weather data available"}
 
-RECENT ACTIONS RESULTS:
+RECENT FUNCTION RESULTS (including event data if any):
 {json.dumps(function_results, indent=2) if function_results else "No recent changes"}
 
-UPGRADE STATUS: {upgrade_info if upgrade_info else "No upgrade requested"}
+You have access to these functions:
+- search_flights: Find new flight options
+- search_hotels: Find new hotel options
+- adjust_budget: Change total budget
+- change_strategy: Change allocation strategy
+- adjust_iterations: Change optimization attempts
+- update_dates: Change travel dates
+- update_preferences: Enable/disable red-eye flights
+- find_better_hotel: Find higher rated or different hotel
+- search_events: Find local events during your trip
 
 Guidelines for your responses:
 1. Be conversational and friendly - use emojis appropriately
@@ -418,12 +496,43 @@ Guidelines for your responses:
 8. If red-eye is enabled and flights found, mention you found overnight options
 9. If no red-eye flights available, suggest they try different dates
 10. When finding better hotels:
-    - If UPGRADE_SUCCESS: Be excited! Mention the rating improvement
-    - If FOUND_ALTERNATIVE: Mention you found another option with same rating
+    - If UPGRADE_SUCCESS: Be excited! Mention the rating improvement and ask what you can help with next.
+    - If FOUND_ALTERNATIVE: Mention you found another option with same rating to stay within budget
     - If NO_BETTER_HOTEL: Explain no better options found and suggest increasing budget
-    - Don't just say "searching" - respond to what actually happened
+    - Don't just say "searching" - respond to what actually happened which already presented to the user.
+    
+11. WHEN YOU SEARCH FOR EVENTS:
+    - You'll receive data about what was found. Use this to craft natural responses.
 
-Remember: You're helping a real person plan their vacation. Be excited for them!"""
+    IF EVENTS WERE FOUND:
+    - Mention the total number of events found
+    - Highlight 1-2 interesting events (title, day, category)
+    - Reference that they can see all events in the panel above
+    - Ask if they want more like a specific type or different categories
+
+    Example tone (NOT hardcoded - just examples):
+    - "Great news! I found 8 events in New York! There's a Knicks game on Wednesday and Hamilton on Thursday - both look amazing! Check out the panel above for all the details. Want me to find more concerts like the jazz one?"
+    - "Found 4 food events during your stay! The Taste of NYC festival on Tuesday has 100+ vendors. Take a look at the panel - any of these catch your eye?"
+    - "I searched for music events and found 6 shows! The Blue Note has jazz on Friday night that's really popular. Want to see more options or try a different category?"
+
+    IF NO EVENTS FOUND:
+    - Be helpful and suggest trying different preferences or dates
+    - Example: "I couldn't find any events matching '{{preferences}}' in {destination}. Want to try different dates or maybe explore food festivals instead?"
+
+    IF USER ASKS FOR "MORE LIKE THAT":
+    - They want similar events (same category)
+    - You can call search_events again with refined preferences
+
+    IF USER ASKS FOR "DIFFERENT" EVENTS:
+    - They want different categories than what they saw
+    - Call search_events with new preferences
+
+    WHEN DATES OR FLIGHTS OR HOTELS CHANGE:
+    - If user previously asked for events, ASK if they want to search again 
+    - Example: "I've updated your dates. Would you like me to search for events during your new stay dates?"
+    - Do NOT assume they want events automatically
+
+Remember: You're helping a real person plan their vacation. Be excited for them! Be enthusiastic, reference the panel, and always offer next steps naturally!"""
     
     messages = [
         {"role": "system", "content": system_prompt},
@@ -480,9 +589,10 @@ Available functions:
 - update_dates: When user wants to change travel dates
 - update_preferences: When user wants to enable/disable red-eye flights
 - find_better_hotel: When user says 'find better hotel', 'better hotel', 'upgrade hotel'
+- search_events: When user wants to find local events, things to do, concerts, etc.
 
 If the user is just asking a question or having a conversation, do NOT call any functions.
-Only call functions when they explicitly want to make changes to the trip.
+Only call functions when they explicitly want to make changes to the trip, search for events, or update their preferences.
 You can call multiple functions if the user makes multiple requests in one message."""
 
     messages = [
@@ -543,6 +653,12 @@ if 'optimization_iterations' not in st.session_state:
     st.session_state.optimization_iterations = []
 if 'weather_cache' not in st.session_state:
     st.session_state.weather_cache = {}
+if 'current_events' not in st.session_state:
+    st.session_state.current_events = None
+if 'current_events_data' not in st.session_state:
+    st.session_state.current_events_data = None
+if 'excluded_event_ids' not in st.session_state:
+    st.session_state.excluded_event_ids = []
 if 'current_params' not in st.session_state:
     st.session_state.current_params = {
         'origin': 'San Francisco',
@@ -570,7 +686,7 @@ if 'processing_message' not in st.session_state:
 st.markdown("""
 <div class="main-header">
     <h1>✈️ AI TRAVEL PLANNER</h1>
-    <p>Your Personal Travel Assistant with Natural Conversations</p>
+    <p>Your Personal AI Travel Assistant ✈️ Flights 🏨 Hotels 🎉 Events 🌤️ Weather 💬 Chat</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -666,6 +782,11 @@ with st.sidebar:
             'max_iterations': max_iterations,
         })
         
+        # Clear events when planning new trip
+        st.session_state.current_events = None
+        st.session_state.current_events_data = None
+        st.session_state.excluded_event_ids = []
+        
         with st.spinner("Planning your perfect trip..."):
             try:
                 result = plan_trip(
@@ -686,9 +807,11 @@ with st.sidebar:
                 # Clear old weather and fetch new
                 st.session_state.weather_cache = {}
                 
-                # Get a warm welcome
+                # Get a warm welcome with trip context
+                trip_context = f"I just planned a trip from {origin} to {destination} from {departure.strftime('%B %d')} to {return_date.strftime('%B %d')} with a budget of ${total_budget}. Can you welcome me and help me with my trip?"
+
                 welcome_message = get_conversational_response(
-                    "I just planned my first trip. Can you help me with it?",
+                    trip_context,
                     result,
                     [],
                     None
@@ -807,6 +930,11 @@ with col_main:
         else:
             st.info("No hotel found")
         
+        # Events Panel
+        if st.session_state.current_events:
+            st.markdown("### 🎉 Local Events")
+            st.markdown(st.session_state.current_events, unsafe_allow_html=True)
+        
         # Weather
         if hotel or flights:
             st.markdown("### 🌤️ Destination Weather")
@@ -906,7 +1034,6 @@ with col_chat:
                         st.session_state.trip_result
                     )
                     
-                    # Store function results but DON'T add to chat yet
                     function_results = exec_result.get("results", [])
                     find_better = exec_result.get("find_better", False)
                     current_hotel_data = exec_result.get("current_hotel")
@@ -969,7 +1096,7 @@ with col_chat:
                             function_results = [f"Error updating: {str(e)}"]
                             print(f"Replan error: {e}")
                 
-                # Step 4: Get natural language response (this will include upgrade info)
+                # Step 4: Get natural language response (LLM handles everything)
                 response = get_conversational_response(
                     user_message,
                     st.session_state.trip_result,
@@ -999,7 +1126,6 @@ with col_chat:
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; padding: 1rem;">
-    <p>Your Personal AI Travel Assistant | Powered by Amadeus, OpenAI & OpenWeatherMap</p>
-    <p style="font-size: 0.8rem;">🌙 Red-eye flights • ⭐ Hotel upgrades • 💬 Natural conversations</p>
+    <p>Your Personal AI Travel Assistant | Powered by Amadeus, OpenAI, OpenWeatherMap & PredictHQ</p>
 </div>
 """, unsafe_allow_html=True)
