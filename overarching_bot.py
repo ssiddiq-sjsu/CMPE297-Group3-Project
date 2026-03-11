@@ -9,13 +9,12 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime, date, timedelta
+from datetime import datetime
 
 from flights_bot import search_flights
 from hotels_bot import search_hotels
 from airline_codes import get_airline_with_code, resolve_airline_code
-from hotels_bot import search_hotels, search_hotels_by_rating
-from events_bot import events_search
+from hotels_bot import search_hotels, search_hotels_by_rating  # Add search_hotels_by_rating
 
 # ==========================================================
 # TYPES AND ENUMS
@@ -616,24 +615,7 @@ Suggestions:
             "return_date": return_date,
         })
         status_msg = result.message
-
-    # Fetch recommended events (one per day) for the destination
-    recommended_events: List[Dict[str, Any]] = []
-    try:
-        city_for_events = (destination or "").split(",")[0].strip() or destination
-        events_result = events_search(
-            city_name=city_for_events,
-            start_date=departure_date,
-            end_date=return_date,
-            num_events=50,
-        )
-        raw_events = (events_result or {}).get("events") or []
-        recommended_events = _recommended_events_one_per_day(
-            raw_events, departure_date, return_date
-        )
-    except Exception as e:
-        print(f"[overarching_bot] events_search error: {e}")
-
+    
     return {
         "formatted": formatted_text,
         "data": {
@@ -644,9 +626,8 @@ Suggestions:
             "flight_ratio": result.flight_ratio,
             "hotel_ratio": result.hotel_ratio,
             "status": result.status.value,
-            "iterations_used": result.iterations_used,
-            "max_iterations": max_iterations,
-            "recommended_events": recommended_events,
+            "iterations_used": result.iterations_used,  # Add this
+            "max_iterations": max_iterations,  # Add this
         },
         "optimization_history": result.optimization_history,
         "metadata": {
@@ -719,37 +700,6 @@ def _format_hotels_simple(hotels: List[Dict[str, Any]]) -> str:
         lines.append(f"  • {h.get('name')}: ${h.get('total', 0):.2f} ({rating_str})")
     
     return "\n".join(lines)
-
-
-def _recommended_events_one_per_day(
-    events: List[Dict[str, Any]],
-    start_date: str,
-    end_date: str,
-) -> List[Dict[str, Any]]:
-    """From a list of events, pick up to one per trip day. Returns list of event dicts in day order."""
-    if not events:
-        return []
-    try:
-        dep = date.fromisoformat(start_date)
-        ret = date.fromisoformat(end_date)
-    except ValueError:
-        return events[:1] if events else []
-    day_count = (ret - dep).days + 1
-    by_day: Dict[str, List[Dict[str, Any]]] = {}
-    for ev in events:
-        raw_start = (ev.get("start") or "")[:10]
-        try:
-            date.fromisoformat(raw_start)
-        except ValueError:
-            continue
-        by_day.setdefault(raw_start, []).append(ev)
-    result = []
-    for i in range(day_count):
-        d = (dep + timedelta(days=i)).isoformat()
-        day_events = by_day.get(d, [])
-        if day_events:
-            result.append(day_events[0])
-    return result
 
 
 def _get_cheapest_flight_cost(flights: List[Dict[str, Any]]) -> float:
