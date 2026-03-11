@@ -17,6 +17,10 @@ app = Flask(__name__, static_folder="static")
 TRIPS = []  # List of trip dicts submitted by users
 # Saved itineraries: key = user-provided name, value = plan dict (total_budget, flights, days)
 SAVED_ITINERARIES = {}
+# Last plan and trip data for controller (so subsequent calls with extra_info get previous plan as context)
+LAST_PLAN = None
+LAST_TRIP_KEY = None
+LAST_TRIP_DATA = None
 PRESET_AIRPORTS = [
     {"code": "SFO", "name": "San Francisco (SFO)"},
     {"code": "LAX", "name": "Los Angeles (LAX)"},
@@ -123,10 +127,44 @@ def search_flights(
         return None
 
 
-def search_hotels(destination: str, check_in: str, check_out: str, budget_max: float):
-    """Search for hotels. Not implemented; returns placeholder."""
-    # TODO: Integrate hotel API
-    return None
+def search_hotels(
+    destination: str,
+    check_in: str,
+    check_out: str,
+    budget_max: float,
+    extra_info: str = "",
+):
+    """
+    Search for hotels via the hotel agent (OpenAI Agents SDK + Amadeus).
+    Returns a list of hotel dicts with name, description, cost, location, type, rating
+    (one per day, same hotel repeated), or None on failure.
+    """
+    try:
+        from bot.hotels_bot import run_agent as run_hotel_agent
+        hotels = run_hotel_agent(
+            destination=destination,
+            check_in=check_in,
+            check_out=check_out,
+            budget_max=float(budget_max),
+            extra_info=extra_info or "",
+        )
+        print("hotels: ", hotels)
+        if not hotels:
+            return None
+        # Server expects one hotel dict per day; we have one suggested hotel for the stay
+        raw = []
+        for h in hotels:
+            raw.append({
+                "name": h.get("name", "N/A"),
+                "description": f"Hotel (rating: {h.get('rating', 'N/A')})",
+                "cost": float(h.get("total", 0)),
+                "location": destination,
+                "type": "hotel",
+                "rating": h.get("rating"),
+            })
+        return raw
+    except Exception:
+        return None
 
 
 def search_activities(
@@ -151,27 +189,49 @@ def search_activities(
         return None
 
 
-def handle_additional_info(info: str) -> None:
+def handle_additional_info(info: str):
     """
-    Filler: process user-provided additional information (e.g. preferences, notes).
-    Called when the user submits the bottom textbox (Enter or Go).
+    Process user-provided additional information. If a plan has been created,
+    passes the info to the controller to update the plan and returns the new plan.
+    If no plan exists or update fails, returns None (and prints an error when no plan).
     """
-    # Placeholder: store or log; can be wired to trip context / LLM later
-    if info:
-        print(f"[additional info] {info}")
+    if not info or not info.strip():
+        return None
+    global LAST_PLAN, LAST_TRIP_DATA
+    if LAST_PLAN is None or LAST_TRIP_DATA is None:
+        print("Error: No plan exists yet. Create a trip first before submitting additional info.")
+        return None
+    try:
+        from bot.controller_bot import run_controller
+        trip_data_with_info = {**LAST_TRIP_DATA, "extra_info": info.strip()}
+        plan = run_controller(LAST_PLAN, trip_data_with_info)
+        LAST_PLAN = plan
+        return plan
+    except Exception as e:
+        print("Error updating plan with additional info:", e)
+        return None
 
-    # fake a delay of 1 second
-    # button spins until the delay is over
-    import time
-    time.sleep(5)
 
+
+def _trip_key(trip_data: dict) -> tuple:
+    """Key for same-trip detection (origin, destination, dates, budget)."""
+    return (
+        str(trip_data.get("home_airport", "")).strip(),
+        str(trip_data.get("destination", "")).strip(),
+        str(trip_data.get("departure_date", "")).strip(),
+        str(trip_data.get("return_date", "")).strip(),
+        float(trip_data.get("budget", 0)),
+    )
 
 
 def build_trip_plan(trip_data: dict) -> dict:
     """
-    Build a structured plan from trip data. Populate the variables below;
-    when stub APIs return real data, assign it here. Returns a dict for the frontend.
+    Build a structured plan from trip data using the controller agent.
+    Controller calls flights and hotels bots and returns a plan for the frontend.
+    On first call current_plan is empty; on subsequent calls with same trip + extra_info
+    the controller receives the previous plan and session context to update the plan.
     """
+<<<<<<< HEAD
     origin = trip_data.get("home_airport", "N/A")
     destination = trip_data.get("destination", "N/A")
     dep_date = trip_data.get("departure_date", "")
@@ -241,53 +301,89 @@ def build_trip_plan(trip_data: dict) -> dict:
     # Days: one entry per day of the trip; each has activities, hotel, other, daily_budget
     # Populate from raw_hotels / raw_activities when stubs return real data
     days = []
+=======
+    global LAST_PLAN, LAST_TRIP_KEY, LAST_TRIP_DATA
+>>>>>>> openai_agents_bots
     try:
-        dep_d = date.fromisoformat(dep_date) if dep_date else None
-        ret_d = date.fromisoformat(ret_date) if ret_date else None
-    except ValueError:
-        dep_d = ret_d = None
-    if dep_d and ret_d and dep_d < ret_d:
-        day_count = (ret_d - dep_d).days + 1
-        # daily_budget_placeholder = round(total_budget / day_count, 2) if day_count else 0
-        for i in range(day_count):
-            daily_budget = 0
-            d = dep_d + timedelta(days=i)
-            date_str = d.isoformat()
-            raw_hotel = raw_hotels[i] if raw_hotels and i < len(raw_hotels) else None
-            raw_day_activities = raw_activities[i] if raw_activities and i < len(raw_activities) else None
-            hotel_name = (raw_hotel.get("name") if isinstance(raw_hotel, dict) else raw_hotel) or "Hotel TBD"
-            activity_list = list(raw_day_activities) if isinstance(raw_day_activities, list) else ["Activities TBD"]
-            # flight info is included here as well as in the other field
-            flight_info = ""
-            for f in flights:
-                if f.get("departure_date") != "N/A" and f.get("departure_date")[:-6] == date_str:
-                    print("flight info: ", flight_info)
-                    flight_info = flight_info + "Flight from " + f.get("origin") + " to " + f.get("destination") + " on " + f.get("departure_date")
-                    daily_budget += f.get("cost")
-            flight_info = flight_info if flight_info else "No flight today"
-            days.append({
-                "date": date_str,
-                "day_number": i + 1,
-                "activities": activity_list,
-                "hotel": hotel_name,
-                "other": flight_info + "",
-                "daily_budget": daily_budget,
-            })
-    else:
-        days = [{
-            "date": dep_date or "N/A",
-            "day_number": 1,
-            "activities": ["Activities TBD"],
-            "hotel": "Hotel TBD",
-            "other": "",
-            "daily_budget": total_budget,
-        }]
-
-    return {
-        "total_budget": total_budget,
-        "flights": flights,
-        "days": days,
-    }
+        from bot.controller_bot import run_controller
+        trip_key = _trip_key(trip_data)
+        current_plan = LAST_PLAN if (LAST_TRIP_KEY is not None and LAST_TRIP_KEY == trip_key) else {}
+        plan = run_controller(current_plan, trip_data)
+        LAST_PLAN = plan
+        LAST_TRIP_KEY = trip_key
+        LAST_TRIP_DATA = trip_data
+        return plan
+    except Exception as e:
+        print("error building trip plan: ", e)
+        # LAST_PLAN = None
+        # LAST_TRIP_KEY = None
+        # # Fallback: build plan without controller (original logic)
+        # origin = trip_data.get("home_airport", "N/A")
+        # destination = trip_data.get("destination", "N/A")
+        # dep_date = trip_data.get("departure_date", "")
+        # ret_date = trip_data.get("return_date", "")
+        # total_budget = float(trip_data.get("budget", 0))
+        # prefer_red_eyes = trip_data.get("prefer_red_eyes", False)
+        # activity_types = trip_data.get("activity_types") or []
+        # raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget, prefer_red_eyes=prefer_red_eyes)
+        # raw_hotels = search_hotels(destination, dep_date, ret_date, total_budget, extra_info=trip_data.get("extra_info", ""))
+        # raw_activities = search_activities(destination, activity_types, total_budget)
+        # flights = []
+        # if raw_flights:
+        #     for f in raw_flights:
+        #         flights.append({
+        #             "description": f.get("description", "Flight"),
+        #             "origin": f.get("origin", "N/A"),
+        #             "destination": f.get("destination", "N/A"),
+        #             "departure_date": f.get("departure_date", "N/A"),
+        #             "arrival_date": f.get("arrival_date", "N/A"),
+        #             "cost": float(f.get("cost", 0)),
+        #         })
+        # else:
+        #     flights = [
+        #         {"description": f"Outbound: {origin} → {destination} ({dep_date}) — placeholder", "origin": origin, "destination": destination, "departure_date": dep_date, "arrival_date": dep_date, "cost": 0},
+        #         {"description": f"Return: {destination} → {origin} ({ret_date}) — placeholder", "origin": destination, "destination": origin, "departure_date": ret_date, "arrival_date": ret_date, "cost": 0},
+        #     ]
+        # days = []
+        # try:
+        #     dep_d = date.fromisoformat(dep_date) if dep_date else None
+        #     ret_d = date.fromisoformat(ret_date) if ret_date else None
+        # except ValueError:
+        #     dep_d = ret_d = None
+        # if dep_d and ret_d and dep_d < ret_d:
+        #     day_count = (ret_d - dep_d).days + 1
+        #     for i in range(day_count):
+        #         daily_budget = 0
+        #         d = dep_d + timedelta(days=i)
+        #         date_str = d.isoformat()
+        #         raw_hotel = raw_hotels[min(i, len(raw_hotels) - 1)] if raw_hotels else None
+        #         raw_day_activities = raw_activities[i] if raw_activities and i < len(raw_activities) else None
+        #         hotel_name = (raw_hotel.get("name") if isinstance(raw_hotel, dict) else raw_hotel) or "Hotel TBD"
+        #         activity_list = list(raw_day_activities) if isinstance(raw_day_activities, list) else ["Activities TBD"]
+        #         flight_info = ""
+        #         for f in flights:
+        #             if f.get("departure_date") != "N/A" and str(f.get("departure_date", ""))[:10] == date_str:
+        #                 flight_info = flight_info + "Flight from " + f.get("origin", "") + " to " + f.get("destination", "") + " on " + str(f.get("departure_date", ""))
+        #                 daily_budget += f.get("cost", 0)
+        #         flight_info = flight_info or "No flight today"
+        #         days.append({
+        #             "date": date_str,
+        #             "day_number": i + 1,
+        #             "activities": activity_list,
+        #             "hotel": hotel_name,
+        #             "other": flight_info,
+        #             "daily_budget": daily_budget,
+        #         })
+        # else:
+        #     days = [{
+        #         "date": dep_date or "N/A",
+        #         "day_number": 1,
+        #         "activities": ["Activities TBD"],
+        #         "hotel": "Hotel TBD",
+        #         "other": "",
+        #         "daily_budget": total_budget,
+        #     }]
+        # return {"total_budget": total_budget, "flights": flights, "days": days}
 
 
 # --- Routes ---
@@ -345,6 +441,7 @@ def api_create_trip():
         "budget": float(data.get("budget", 0)),
         "activity_types": list(data.get("activity_types", [])),
         "prefer_red_eyes": bool(data.get("prefer_red_eyes", False)),
+        "extra_info": data.get("extra_info", "") or "",
     }
     TRIPS.append(trip_data)
 
@@ -388,11 +485,18 @@ def api_get_itinerary(name):
 
 @app.route("/api/additional-info", methods=["POST"])
 def api_additional_info():
-    """Accept additional info from the bottom textbox; calls handle_additional_info(info)."""
+    """Accept additional info; updates plan via controller and returns the new plan for the GUI."""
     data = request.get_json(force=True, silent=True) or {}
     info = (data.get("info") or "").strip()
-    handle_additional_info(info)
-    return jsonify({"success": True})
+    plan = handle_additional_info(info)
+    if plan is not None:
+        return jsonify({"success": True, "plan": plan})
+    if not info:
+        return jsonify({"success": True})
+    return jsonify({
+        "success": False,
+        "message": "No plan exists yet. Create a trip first before submitting additional info.",
+    }), 400
 
 
 def main():
