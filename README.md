@@ -42,6 +42,7 @@ Create a `.env` file in the root directory and add your API keys:
 echo "AMADEUS_CLIENT_ID=your_key_here" > .env
 echo "AMADEUS_SECRET=your_secret_here" >> .env
 echo "OPENAI_API_KEY=your_openai_key_here" >> .env
+echo "PHQ_API_KEY=your phq api key here" >> .env
 ```
 
 Or manually create a `.env` file with:
@@ -55,6 +56,7 @@ OPENAI_API_KEY=your_openai_key_here
 ### 5️⃣ Run the Application
 
 ```bash
+cd final_streamlit_bot
 streamlit run app.py
 ```
 
