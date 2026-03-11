@@ -231,79 +231,7 @@ def build_trip_plan(trip_data: dict) -> dict:
     On first call current_plan is empty; on subsequent calls with same trip + extra_info
     the controller receives the previous plan and session context to update the plan.
     """
-<<<<<<< HEAD
-    origin = trip_data.get("home_airport", "N/A")
-    destination = trip_data.get("destination", "N/A")
-    dep_date = trip_data.get("departure_date", "")
-    ret_date = trip_data.get("return_date", "")
-    total_budget = float(trip_data.get("budget", 0)) # should confirm if end budget is the same as total budget, make sure the other budgets sum to this
-    prefer_red_eyes = trip_data.get("prefer_red_eyes", False)
-    activity_types = trip_data.get("activity_types") or []
-
-    # --- Variables to be populated by stub / real APIs ---
-    # raw_flights is a list of flights for each day of the trip
-    # each flight is a dictionary with the following keys:
-    # - description: str
-    # - origin: str
-    # - destination: str
-    # - departure_date: str
-    # - arrival_date: str
-    # - cost: float
-    # - airline: str
-    # - duration: str
-    # - flight_number: str
-    # None for no flights
-    raw_flights = search_flights(origin, destination, dep_date, ret_date, total_budget, prefer_red_eyes=prefer_red_eyes)
-
-    # raw_hotels is a list of hotels for each day of the trip
-    # each hotel is a dictionary with the following keys:
-    # - name: str
-    # - description: str
-    # - cost: float
-    # - location: str
-    # - type: str
-    # - rating: float
-    # None for no hotels
-    # currently only name is required / used
-    raw_hotels = search_hotels(destination, dep_date, ret_date, total_budget)
-
-    # raw_activities is a list of activities for each day of the trip
-    # each activity is a dictionary with the following keys:
-    # - name: str
-    # - description: str
-    # - cost: float
-    # - location: str
-    # - type: str
-    # - rating: float
-    # None for no activities
-    # currently only name is required / used
-    raw_activities = search_activities(destination, activity_types, total_budget, start_date=dep_date, end_date=ret_date)
-
-    # Flights: list of { "description": str, "cost": float }
-    flights = []
-    if raw_flights:
-        for f in raw_flights:
-            flights.append({
-                "description": f.get("description", "Flight"),
-                "origin": f.get("origin", "N/A"),
-                "destination": f.get("destination", "N/A"),
-                "departure_date": f.get("departure_date", "N/A"),
-                "arrival_date": f.get("arrival_date", "N/A"),
-                "cost": float(f.get("cost", 0)),
-            })
-    else:
-        # Placeholder when search_flights() not implemented
-        flights = [
-            {"description": f"Outbound: {origin} → {destination} ({dep_date}) — placeholder", "origin": origin, "destination": destination, "departure_date": dep_date, "return_date": dep_date, "cost": 0},
-            {"description": f"Return: {destination} → {origin} ({ret_date}) — placeholder", "origin": destination, "destination": origin, "departure_date": ret_date, "return_date": ret_date, "cost": 0},
-        ]
-
-    # Days: one entry per day of the trip; each has activities, hotel, other, daily_budget
-    # Populate from raw_hotels / raw_activities when stubs return real data
-    days = []
-=======
     global LAST_PLAN, LAST_TRIP_KEY, LAST_TRIP_DATA
->>>>>>> openai_agents_bots
     try:
         from bot.controller_bot import run_controller
         trip_key = _trip_key(trip_data)

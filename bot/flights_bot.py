@@ -16,62 +16,6 @@ from .amadeus_flights import query_flights as amadeus_query_flights
 if not os.getenv("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY is not set")
 
-<<<<<<< HEAD
-_client = OpenAI(api_key=OPENAI_API_KEY)
- 
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "query_amadeus_flights",
-            "description": "Search Amadeus for flight offers. Use this to get outbound and return options. Call with origin (IATA code, e.g. SFO), destination (city name or IATA, e.g. New York City or JFK), departure_date (YYYY-MM-DD), return_date (YYYY-MM-DD), prefer_red_eyes (bool), and max_budget (float). Returns a list of flight dicts with home_airport, destination, departure_date (with time), arrival_date, cost, airline, duration, flight_number, direction.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "origin_code": {"type": "string", "description": "Origin airport IATA code (e.g. SFO, JFK)"},
-                    "destination": {"type": "string", "description": "Destination city name or IATA code"},
-                    "departure_date": {"type": "string", "description": "Departure date YYYY-MM-DD"},
-                    "return_date": {"type": "string", "description": "Return date YYYY-MM-DD"},
-                    "prefer_red_eyes": {"type": "boolean", "description": "Prefer red-eye (overnight) flights", "default": False},
-                    "max_budget": {"type": "number", "description": "Maximum total budget for the search", "default": None},
-                },
-                "required": ["origin_code", "destination", "departure_date", "return_date"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "submit_optimal_flights",
-            "description": "Call this when you have chosen the optimal flights. Pass a JSON array of flight objects. Each flight must have: home_airport, destination, departure_date (with time, e.g. YYYY-MM-DD HH:MM), arrival_date (with time), cost, airline, duration, flight_number. For round trip you must submit exactly two flights: one outbound, one return.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "flights": {
-                        "type": "array",
-                        "description": "List of chosen flight objects",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "home_airport": {"type": "string"},
-                                "destination": {"type": "string"},
-                                "departure_date": {"type": "string"},
-                                "arrival_date": {"type": "string"},
-                                "cost": {"type": "number"},
-                                "airline": {"type": "string"},
-                                "duration": {"type": "string"},
-                                "flight_number": {"type": "string"},
-                            },
-                            "required": ["home_airport", "destination", "departure_date", "arrival_date", "cost", "airline", "duration", "flight_number"],
-                        },
-                    },
-                },
-                "required": ["flights"],
-            },
-        },
-    },
-]
-=======
 
 # --- Function tools (Amadeus + submit) ---
 
@@ -103,7 +47,6 @@ def query_amadeus_flights(
         max_price=max_budget,
     )
     return json.dumps(result, default=str)
->>>>>>> openai_agents_bots
 
 
 def _make_submit_tool(chosen: list) -> Any:
