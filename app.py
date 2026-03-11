@@ -374,7 +374,11 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
             "iterations_used": f"{trip_data.get('data', {}).get('iterations_used', 0)}/{metadata.get('max_iterations', 5)}",
             "red_eye_enabled": metadata.get('prefer_red_eyes', False),
             "red_eye_flights_found": red_eye_count,
-            "weather": weather_info
+            "weather": weather_info,
+            "recommended_events": [
+                (e.get("title") or "Event") + (f" ({(e.get('start') or '')[:10]})" if e.get("start") else "")
+                for e in trip_data.get('data', {}).get('recommended_events', [])
+            ]
         },
         "flights": "\n".join(flight_info) if flight_info else "No flights found.",
         "hotel": "\n".join(hotel_info) if hotel_info else "No hotel found."
@@ -723,7 +727,19 @@ with col_main:
         with col1:
             st.metric("Total Cost", f"${data.get('total_cost', 0):.2f}")
         with col2:
-            st.metric("Remaining", f"${data.get('remaining_budget', 0):.2f}")
+            remaining = float(data.get('remaining_budget', 0) or 0)
+            if remaining < 0:
+                st.markdown(
+                    '<div style="background-color: rgba(49, 51, 63, 0.6); padding: 1rem 1rem 1rem 1rem; '
+                    'border-radius: 0.5rem; border: 1px solid rgba(250, 250, 250, 0.2);">'
+                    '<p style="color: rgba(250, 250, 250, 0.6); font-size: 0.875rem; margin: 0 0 0.25rem 0;">Remaining</p>'
+                    f'<p style="color: #ff4b4b; font-size: 1.5rem; font-weight: 600; margin: 0;" '
+                    f'title="You are over budget">${remaining:.2f}</p>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.metric("Remaining", f"${remaining:.2f}")
         with col3:
             if data.get('flight_ratio'):
                 st.metric("Flights %", f"{data['flight_ratio']*100:.0f}%")
@@ -806,7 +822,33 @@ with col_main:
                 st.markdown(f"**${hotel.get('total', 0):.2f}**")
         else:
             st.info("No hotel found")
-        
+
+        # Recommended events (one per day)
+        st.markdown("### 🎉 Recommended Events")
+        recommended_events = data.get("recommended_events") or []
+        if recommended_events:
+            for i, ev in enumerate(recommended_events, 1):
+                title = ev.get("title") or "Event"
+                start_raw = ev.get("start") or ""
+                category = (ev.get("category") or "").replace("-", " ").title()
+                try:
+                    if start_raw:
+                        dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                        start_str = dt.strftime("%a, %b %d at %I:%M %p")
+                    else:
+                        start_str = ""
+                except (ValueError, TypeError):
+                    start_str = start_raw[:16] if start_raw else ""
+                with st.container():
+                    st.markdown(f"**Day {i}:** {title}")
+                    if start_str:
+                        st.caption(f"📅 {start_str}")
+                    if category:
+                        st.caption(f"🏷️ {category}")
+                    st.divider()
+        else:
+            st.caption("No events found for your trip dates. Try another destination or date range.")
+
         # Weather
         if hotel or flights:
             st.markdown("### 🌤️ Destination Weather")
