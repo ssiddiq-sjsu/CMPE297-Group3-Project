@@ -9,6 +9,13 @@ import time
 from datetime import date, timedelta
 import requests
 
+"""
+PredictHQ API is used to search for events in a city between two dates.
+It is used to find events that are happening in a city between two dates.
+
+This code was originally developed by Nic but Craig copy pasted it so the git history is a bit messy.
+"""
+
 PHQ_API_KEY = os.getenv("PHQ_API_KEY")
 PHQ_BASE_URL = "https://api.predicthq.com/v1"
 phq = Client(access_token=PHQ_API_KEY) if PHQ_API_KEY else None
