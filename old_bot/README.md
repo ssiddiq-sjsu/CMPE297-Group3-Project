@@ -1,62 +1,63 @@
-# CMPE297-Group3-Project
-# Vacay Plan — Vacation Planning Website
+## 🚀 Quick Start
 
-A local web app to plan vacations: choose home airport, dates, destination, budget, and activity types. The backend uses in-memory Python variables and **stub (uncompleted) functions** for flight/hotel/activity processing.
+Follow these steps to set up and run the AI Travel Planner locally.
 
-## Features
-
-- **Welcome page** with a call-to-action to start planning
-- **New trip form**: home airport (dropdown), departure date, destination (dropdown), return date
-- **Budget slider** (e.g. $500–$15,000)
-- **Activity checkboxes**: museum, park, rental car, beach, hiking, dining, nightlife, shopping
-- **Output text area** showing the generated plan (placeholder until real APIs are connected)
-
-## Setup
+### 1️⃣ Clone the Repository
 
 ```bash
-cd /path/to/website_test
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+git clone https://github.com/ssiddiq-sjsu/CMPE297-Group3-Project.git
+cd CMPE297-Group3-Project
+git checkout Streamlit_App
+```
+
+### 2️⃣ Set Up Virtual Environment
+
+```bash
+python -m venv venv
+```
+
+Activate the environment:
+
+**Mac / Linux**
+```bash
+source venv/bin/activate
+```
+
+**Windows**
+```bash
+venv\Scripts\activate
+```
+
+### 3️⃣ Install Dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
-## Run
+### 4️⃣ Configure Environment Variables
 
-Default port is **5000**. Override with the `PORT` environment variable:
+Create a `.env` file in the root directory and add your API keys:
 
 ```bash
-# Default: http://127.0.0.1:5000 (local only)
-python server.py
-
-# Custom port, e.g. 8080
-PORT=8080 python server.py
-
-# Listen on all interfaces (0.0.0.0) so other devices on the network can connect
-LISTEN_ALL=1 python server.py
-# Or explicitly:
-HOST=0.0.0.0 python server.py
+echo "AMADEUS_CLIENT_ID=your_key_here" > .env
+echo "AMADEUS_SECRET=your_secret_here" >> .env
+echo "OPENAI_API_KEY=your_openai_key_here" >> .env
 ```
 
-Then open `http://127.0.0.1:5000` (or your chosen port) in a browser. If using `LISTEN_ALL=1`, use your machine’s IP and port from other devices.
+Or manually create a `.env` file with:
 
-## Backend
-
-- **Config**: `config.py` — `PORT`, `HOST`, `DEBUG` (env: `PORT`, `HOST`, `DEBUG`)
-- **Data**: Trips are stored in the `TRIPS` list; airports and destinations are preset in `server.py`
-- **Stubs**: `search_flights()`, `search_hotels()`, `search_activities()` are unimplemented; `build_trip_plan()` returns a text summary and placeholders. Replace these with real API calls when ready.
-
-## Project layout
-
+```env
+AMADEUS_CLIENT_ID=your_key_here
+AMADEUS_SECRET=your_secret_here
+OPENAI_API_KEY=your_openai_key_here
 ```
-website_test/
-├── config.py          # Port & host config
-├── server.py          # Flask app, APIs, stub logic
-├── requirements.txt
-├── README.md
-└── static/
-    ├── index.html
-    ├── css/
-    │   └── style.css
-    └── js/
-        └── app.js
+
+### 5️⃣ Run the Application
+
+```bash
+streamlit run app.py
 ```
+
+---
+
+✅ Once running, open the local URL shown in your terminal (usually `http://localhost:8501`) in your browser.
