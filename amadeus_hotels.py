@@ -1,5 +1,5 @@
 """
-Hotel search helper module using Amadeus API with rating filtering.
+Hotel search helper module using Amadeus API with international support.
 Credentials read from environment variables.
 """
 
@@ -21,8 +21,9 @@ if not AMADEUS_CLIENT_ID or not AMADEUS_CLIENT_SECRET:
     print("⚠️ WARNING: Amadeus credentials not set")
 
 
-# City name to IATA city code mappings
+# City name to IATA city code mappings (expanded for international cities)
 CITYNAME_TO_CITYCODE: Dict[str, str] = {
+    # US Cities
     "New York City": "NYC", "New York": "NYC",
     "Miami": "MIA",
     "Los Angeles": "LAX",
@@ -33,9 +34,6 @@ CITYNAME_TO_CITYCODE: Dict[str, str] = {
     "Chicago": "CHI",
     "Honolulu": "HNL",
     "Boston": "BOS",
-    "Vancouver": "YVR",
-    "Toronto": "YTO",
-    "Montreal": "YMQ",
     "San Diego": "SAN",
     "Seattle": "SEA",
     "New Orleans": "MSY",
@@ -46,10 +44,137 @@ CITYNAME_TO_CITYCODE: Dict[str, str] = {
     "Atlanta": "ATL",
     "Houston": "HOU",
     "Dallas": "DFW",
+    
+    # International Cities
+    "Paris": "PAR",
+    "London": "LON",
+    "Tokyo": "TYO",
+    "Rome": "ROM",
+    "Barcelona": "BCN",
+    "Madrid": "MAD",
+    "Berlin": "BER",
+    "Munich": "MUC",
+    "Amsterdam": "AMS",
+    "Brussels": "BRU",
+    "Vienna": "VIE",
+    "Prague": "PRG",
+    "Budapest": "BUD",
+    "Warsaw": "WAW",
+    "Stockholm": "STO",
+    "Copenhagen": "CPH",
+    "Oslo": "OSL",
+    "Helsinki": "HEL",
+    "Dublin": "DUB",
+    "Edinburgh": "EDI",
+    "Manchester": "MAN",
+    "Liverpool": "LPL",
+    "Birmingham": "BHX",
+    "Bristol": "BRS",
+    "Glasgow": "GLA",
+    "Milan": "MIL",
+    "Venice": "VCE",
+    "Florence": "FLR",
+    "Naples": "NAP",
+    "Turin": "TRN",
+    "Bologna": "BLQ",
+    "Geneva": "GVA",
+    "Zurich": "ZRH",
+    "Basel": "BSL",
+    "Lausanne": "QYL",
+    "Luxembourg": "LUX",
+    "Monaco": "MCM",
+    "Lisbon": "LIS",
+    "Porto": "OPO",
+    "Faro": "FAO",
+    "Athens": "ATH",
+    "Thessaloniki": "SKG",
+    "Istanbul": "IST",
+    "Antalya": "AYT",
+    "Dubai": "DXB",
+    "Abu Dhabi": "AUH",
+    "Doha": "DOH",
+    "Riyadh": "RUH",
+    "Jeddah": "JED",
+    "Kuwait City": "KWI",
+    "Manama": "BAH",
+    "Muscat": "MCT",
+    "Tel Aviv": "TLV",
+    "Jerusalem": "JRS",
+    "Amman": "AMM",
+    "Cairo": "CAI",
+    "Casablanca": "CMN",
+    "Marrakech": "RAK",
+    "Tunis": "TUN",
+    "Algiers": "ALG",
+    "Johannesburg": "JNB",
+    "Cape Town": "CPT",
+    "Nairobi": "NBO",
+    "Lagos": "LOS",
+    "Accra": "ACC",
+    "Dakar": "DKR",
+    "Bangkok": "BKK",
+    "Phuket": "HKT",
+    "Chiang Mai": "CNX",
+    "Singapore": "SIN",
+    "Kuala Lumpur": "KUL",
+    "Jakarta": "CGK",
+    "Bali": "DPS",
+    "Manila": "MNL",
+    "Ho Chi Minh City": "SGN",
+    "Hanoi": "HAN",
+    "Phnom Penh": "PNH",
+    "Yangon": "RGN",
+    "Mumbai": "BOM",
+    "Delhi": "DEL",
+    "Bangalore": "BLR",
+    "Chennai": "MAA",
+    "Kolkata": "CCU",
+    "Hyderabad": "HYD",
+    "Seoul": "SEL",
+    "Busan": "PUS",
+    "Beijing": "BJS",
+    "Shanghai": "SHA",
+    "Guangzhou": "CAN",
+    "Shenzhen": "SZX",
+    "Hong Kong": "HKG",
+    "Taipei": "TPE",
+    "Sydney": "SYD",
+    "Melbourne": "MEL",
+    "Brisbane": "BNE",
+    "Perth": "PER",
+    "Adelaide": "ADL",
+    "Auckland": "AKL",
+    "Wellington": "WLG",
+    "Christchurch": "CHC",
+    "Rio de Janeiro": "RIO",
+    "Sao Paulo": "SAO",
+    "Brasilia": "BSB",
+    "Salvador": "SSA",
+    "Fortaleza": "FOR",
+    "Buenos Aires": "BUE",
+    "Santiago": "SCL",
+    "Lima": "LIM",
+    "Bogota": "BOG",
+    "Quito": "UIO",
+    "Caracas": "CCS",
+    "Panama City": "PTY",
+    "San Jose": "SJO",
+    "Mexico City": "MEX",
+    "Cancun": "CUN",
+    "Guadalajara": "GDL",
+    "Monterrey": "MTY",
+    "Vancouver": "YVR",
+    "Toronto": "YTO",
+    "Montreal": "YMQ",
+    "Calgary": "YYC",
+    "Ottawa": "YOW",
+    "Quebec City": "YQB",
+    "Halifax": "YHZ",
 }
 
 # Airport code to city code mappings
 AIRPORT_TO_CITY_CODE: Dict[str, str] = {
+    # US Airports
     "JFK": "NYC", "LGA": "NYC", "EWR": "NYC",
     "ORD": "CHI", "MDW": "CHI",
     "DCA": "WAS", "IAD": "WAS", "BWI": "WAS",
@@ -58,6 +183,116 @@ AIRPORT_TO_CITY_CODE: Dict[str, str] = {
     "IAH": "HOU", "HOU": "HOU",
     "MIA": "MIA", "FLL": "MIA", "PBI": "MIA",
     "MCO": "ORL", "SFB": "ORL",
+    
+    # International Airports
+    "CDG": "PAR", "ORY": "PAR", "LBG": "PAR",
+    "LHR": "LON", "LGW": "LON", "STN": "LON", "LTN": "LON", "LCY": "LON",
+    "NRT": "TYO", "HND": "TYO",
+    "FCO": "ROM", "CIA": "ROM",
+    "BCN": "BCN",
+    "MAD": "MAD",
+    "TXL": "BER", "BER": "BER", "SXF": "BER",
+    "MUC": "MUC",
+    "AMS": "AMS",
+    "BRU": "BRU",
+    "VIE": "VIE",
+    "PRG": "PRG",
+    "BUD": "BUD",
+    "WAW": "WAW",
+    "ARN": "STO", "NYO": "STO",
+    "CPH": "CPH",
+    "OSL": "OSL",
+    "HEL": "HEL",
+    "DUB": "DUB",
+    "EDI": "EDI",
+    "MAN": "MAN",
+    "LPL": "LPL",
+    "MXP": "MIL", "LIN": "MIL", "BGY": "MIL",
+    "VCE": "VCE",
+    "FLR": "FLR",
+    "GVA": "GVA",
+    "ZRH": "ZRH",
+    "LIS": "LIS",
+    "OPO": "OPO",
+    "ATH": "ATH",
+    "IST": "IST", "SAW": "IST",
+    "DXB": "DXB",
+    "AUH": "AUH",
+    "DOH": "DOH",
+    "RUH": "RUH",
+    "JED": "JED",
+    "KWI": "KWI",
+    "BAH": "BAH",
+    "MCT": "MCT",
+    "TLV": "TLV",
+    "AMM": "AMM",
+    "CAI": "CAI",
+    "CMN": "CMN",
+    "RAK": "RAK",
+    "JNB": "JNB",
+    "CPT": "CPT",
+    "NBO": "NBO",
+    "LOS": "LOS",
+    "ACC": "ACC",
+    "DKR": "DKR",
+    "BKK": "BKK", "DMK": "BKK",
+    "HKT": "HKT",
+    "CNX": "CNX",
+    "SIN": "SIN",
+    "KUL": "KUL",
+    "CGK": "CGK",
+    "DPS": "DPS",
+    "MNL": "MNL",
+    "SGN": "SGN",
+    "HAN": "HAN",
+    "PNH": "PNH",
+    "RGN": "RGN",
+    "BOM": "BOM",
+    "DEL": "DEL",
+    "BLR": "BLR",
+    "MAA": "MAA",
+    "CCU": "CCU",
+    "HYD": "HYD",
+    "ICN": "SEL", "GMP": "SEL",
+    "PUS": "PUS",
+    "PEK": "BJS", "NAY": "BJS",
+    "PVG": "SHA", "SHA": "SHA",
+    "CAN": "CAN",
+    "SZX": "SZX",
+    "HKG": "HKG",
+    "TPE": "TPE",
+    "SYD": "SYD",
+    "MEL": "MEL",
+    "BNE": "BNE",
+    "PER": "PER",
+    "ADL": "ADL",
+    "AKL": "AKL",
+    "WLG": "WLG",
+    "CHC": "CHC",
+    "GIG": "RIO", "SDU": "RIO",
+    "GRU": "SAO", "CGH": "SAO", "VCP": "SAO",
+    "BSB": "BSB",
+    "SSA": "SSA",
+    "FOR": "FOR",
+    "EZE": "BUE", "AEP": "BUE",
+    "SCL": "SCL",
+    "LIM": "LIM",
+    "BOG": "BOG",
+    "UIO": "UIO",
+    "CCS": "CCS",
+    "PTY": "PTY",
+    "SJO": "SJO",
+    "MEX": "MEX", "NLU": "MEX",
+    "CUN": "CUN",
+    "GDL": "GDL",
+    "MTY": "MTY",
+    "YVR": "YVR",
+    "YYZ": "YTO", "YTZ": "YTO", "YYZ": "YTO",
+    "YUL": "YMQ", "YHU": "YMQ",
+    "YYC": "YYC",
+    "YOW": "YOW",
+    "YQB": "YQB",
+    "YHZ": "YHZ",
 }
 
 
@@ -70,13 +305,27 @@ def resolve_hotel_city_code(destination: Optional[str]) -> Optional[str]:
     if not raw:
         return None
 
-    # Check exact city name match
-    if raw in CITYNAME_TO_CITYCODE:
-        return CITYNAME_TO_CITYCODE[raw]
+    # Check exact city name match (case-insensitive)
+    raw_lower = raw.lower()
+    for city_name, code in CITYNAME_TO_CITYCODE.items():
+        if city_name.lower() == raw_lower:
+            print(f"✅ Resolved city name '{raw}' → '{code}'")
+            return code
 
     # Try uppercase for airport/city code
     code = raw.upper()
-    return AIRPORT_TO_CITY_CODE.get(code, code)
+    if code in AIRPORT_TO_CITY_CODE:
+        resolved = AIRPORT_TO_CITY_CODE[code]
+        print(f"✅ Resolved airport code '{code}' → '{resolved}'")
+        return resolved
+    
+    # Assume it might already be a city code (3 letters)
+    if len(code) == 3 and code.isalpha():
+        print(f"✅ Using direct city code: {code}")
+        return code
+    
+    print(f"❌ Could not resolve destination: {raw}")
+    return None
 
 
 # Token cache
@@ -149,8 +398,8 @@ def amadeus_get(
                 time.sleep(sleep_time)
                 continue
 
-            print(f"Amadeus API error: {r.status_code}")
-            return {"data": []}
+            print(f"Amadeus API error: {r.status_code} - {r.text}")
+            return {"data": [], "error": f"HTTP {r.status_code}"}
 
         except requests.exceptions.Timeout:
             if attempt < retries:
@@ -158,13 +407,45 @@ def amadeus_get(
                 time.sleep(sleep_time)
                 continue
             print(f"Timeout after {timeout}s")
-            return {"data": []}
+            return {"data": [], "error": "timeout"}
 
         except requests.exceptions.RequestException as e:
             print(f"Request exception: {e}")
-            return {"data": []}
+            return {"data": [], "error": str(e)}
 
     return {"data": []}
+
+
+def get_hotel_ids(city_code: str, max_ids: int = 15) -> List[str]:
+    """
+    Get hotel IDs for a city code using the Hotel List API.
+    This is the required first step for the new Amadeus Hotel API workflow.
+    """
+    print(f"🔍 Getting hotel IDs for city code: {city_code}")
+    
+    resp = amadeus_get(
+        "/v1/reference-data/locations/hotels/by-city",
+        params={
+            "cityCode": city_code,
+            "radius": 10,
+            "radiusUnit": "KM",
+            "hotelSource": "ALL",
+        },
+        timeout=10,
+        retries=2,
+    )
+
+    if resp.get("error"):
+        print(f"❌ Error getting hotel IDs: {resp['error']}")
+        return []
+
+    hotel_ids = []
+    for hotel in resp.get("data", []):
+        if isinstance(hotel, dict) and hotel.get("hotelId"):
+            hotel_ids.append(str(hotel["hotelId"]).strip())
+    
+    print(f"✅ Found {len(hotel_ids)} hotel IDs in {city_code}")
+    return hotel_ids[:max_ids]
 
 
 def get_hotel_ids_by_rating(city_code: str, min_rating: int = 3, max_ids: int = 20) -> List[Dict[str, Any]]:
@@ -175,6 +456,8 @@ def get_hotel_ids_by_rating(city_code: str, min_rating: int = 3, max_ids: int = 
     # Convert rating to string format expected by Amadeus (1,2,3,4,5)
     rating_param = ",".join([str(r) for r in range(min_rating, 6)])
     
+    print(f"🔍 Getting hotels with min rating {min_rating}⭐ in {city_code}")
+    
     resp = amadeus_get(
         "/v1/reference-data/locations/hotels/by-city",
         params={
@@ -182,11 +465,15 @@ def get_hotel_ids_by_rating(city_code: str, min_rating: int = 3, max_ids: int = 
             "radius": 10,
             "radiusUnit": "KM",
             "hotelSource": "ALL",
-            "ratings": rating_param,  # Filter by star rating
+            "ratings": rating_param,
         },
         timeout=10,
         retries=2,
     )
+
+    if resp.get("error"):
+        print(f"❌ Error getting hotels by rating: {resp['error']}")
+        return []
 
     hotels = []
     for hotel in resp.get("data", []):
@@ -198,6 +485,7 @@ def get_hotel_ids_by_rating(city_code: str, min_rating: int = 3, max_ids: int = 
                 "cityCode": city_code
             })
     
+    print(f"✅ Found {len(hotels)} hotels with min rating {min_rating}⭐")
     return hotels[:max_ids]
 
 
@@ -217,6 +505,8 @@ def get_offers_for_hotel_ids(
     if not clean_ids:
         return []
 
+    print(f"🔍 Getting offers for {len(clean_ids)} hotels")
+    
     offers = amadeus_get(
         "/v3/shopping/hotel-offers",
         params={
@@ -231,6 +521,10 @@ def get_offers_for_hotel_ids(
         timeout=15,
         retries=2,
     )
+
+    if offers.get("error"):
+        print(f"❌ Error getting offers: {offers['error']}")
+        return []
 
     results = []
     for entry in offers.get("data", []):
@@ -261,6 +555,7 @@ def get_offers_for_hotel_ids(
 
     # Sort by price
     results.sort(key=lambda x: x.get("total", float('inf')))
+    print(f"✅ Found {len(results)} hotel offers")
     return results[:max_hotels]
 
 
@@ -274,24 +569,27 @@ def search_hotels_by_rating(
 ) -> List[Dict[str, Any]]:
     """
     Search for hotels filtered by minimum star rating.
-    Returns list of hotel offers.
+    Uses the correct two-step Amadeus API workflow:
+    1. Get hotel IDs by city and rating
+    2. Get offers for those hotel IDs
     """
     print(f"\n🔍 Searching hotels in {destination} with min rating {min_rating}⭐")
     
     city_code = resolve_hotel_city_code(destination)
     if not city_code:
-        print(f"Could not resolve city code for: {destination}")
+        print(f"❌ Could not resolve city code for: {destination}")
         return []
 
-    # Get hotels with minimum rating
+    # Step 1: Get hotels with minimum rating
     hotels = get_hotel_ids_by_rating(city_code, min_rating, max_ids=20)
     if not hotels:
-        print(f"No hotels found with min rating {min_rating}⭐")
+        print(f"❌ No hotels found with min rating {min_rating}⭐")
         return []
 
-    # Get hotel IDs for offer search
+    # Extract hotel IDs
     hotel_ids = [h["hotelId"] for h in hotels]
     
+    # Step 2: Get offers for those hotel IDs
     offers = get_offers_for_hotel_ids(
         hotel_ids=hotel_ids,
         check_in=check_in,
@@ -307,11 +605,10 @@ def search_hotels_by_rating(
         if hotel_id in rating_map:
             offer["rating"] = rating_map[hotel_id]
     
-    print(f"Found {len(offers)} hotel offers with min rating {min_rating}⭐")
+    print(f"✅ Found {len(offers)} hotel offers with min rating {min_rating}⭐")
     return offers
 
 
-# Legacy function for backward compatibility
 def search_hotels_for_trip(
     destination: str,
     check_in: str,
@@ -319,7 +616,10 @@ def search_hotels_for_trip(
     adults: int = 1,
     max_hotels: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Legacy function - searches all hotels without rating filter."""
+    """
+    Main function - searches all hotels without rating filter.
+    Uses the correct two-step Amadeus API workflow.
+    """
     return search_hotels_by_rating(
         destination=destination,
         check_in=check_in,

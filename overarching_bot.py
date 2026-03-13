@@ -14,7 +14,7 @@ from datetime import datetime
 from flights_bot import search_flights
 from hotels_bot import search_hotels
 from airline_codes import get_airline_with_code, resolve_airline_code
-from hotels_bot import search_hotels, search_hotels_by_rating  # Add search_hotels_by_rating
+from hotels_bot import search_hotels, search_hotels_by_rating
 
 # ==========================================================
 # TYPES AND ENUMS
@@ -153,7 +153,7 @@ def optimize_trip(
         entry["selected_hotel"] = selected_hotel.get("name", "Unknown")
         entry["total_cost"] = round(total_cost, 2)
         
-        # CRITICAL FIX: Check if within budget and return immediately
+        # Check if within budget and return immediately
         if total_cost <= total_budget:
             print(f"✅ FOUND SOLUTION after {iteration+1} iterations")
             entry["action"] = "complete"
@@ -398,13 +398,13 @@ def format_trip_result(result: OptimizationResult, params: Dict[str, Any]) -> st
     elif result.status == OptimizationStatus.PARTIAL:
         lines.append(f"⚠️ **Partial Results Found**")
         lines.append(f"(Used {result.iterations_used} iterations)")
-        lines.append(f"*{result.message}*")  # <-- Fixed: Use asterisks for italics
-        lines.append("")  # <-- Add blank line for spacing
+        lines.append(f"*{result.message}*")  
+        lines.append("")  
     else:
         lines.append(f"❌ **No Options Found**")
         lines.append(f"(Used {result.iterations_used} iterations)")
-        lines.append(f"*{result.message}*")  # <-- Fixed: Use asterisks for italics
-        lines.append("")  # <-- Add blank line for spacing
+        lines.append(f"*{result.message}*")  
+        lines.append("")  
     
     lines.append("")
     lines.append(f"💰 **Total Cost:** \${result.total_cost:.2f}")
@@ -555,7 +555,6 @@ def plan_trip(
         max_iterations=max_iterations,
     )
     
-    # ... rest of your function remains the same    
     # Format response based on what we found
     if not flights and not hotels:
         status_msg = "❌ No flights or hotels found"
@@ -626,8 +625,8 @@ Suggestions:
             "flight_ratio": result.flight_ratio,
             "hotel_ratio": result.hotel_ratio,
             "status": result.status.value,
-            "iterations_used": result.iterations_used,  # Add this
-            "max_iterations": max_iterations,  # Add this
+            "iterations_used": result.iterations_used,  
+            "max_iterations": max_iterations,  
         },
         "optimization_history": result.optimization_history,
         "metadata": {
@@ -638,7 +637,7 @@ Suggestions:
             "total_budget": total_budget,
             "strategy": strategy.value,
             "max_iterations": max_iterations,
-            "iterations_used": result.iterations_used,  # Add this
+            "iterations_used": result.iterations_used,  
         }
     }
 

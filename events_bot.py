@@ -2,7 +2,6 @@
 Events Bot using PredictHQ API
 Finds and curates local events during travel dates
 Returns raw data only - LLM handles all responses
-Fixed venue display and CSS
 """
 import re
 import os
