@@ -1,5 +1,5 @@
 """
-Streamlit GUI for Travel Planner - Hybrid Architecture with Natural Responses
+Streamlit GUI for Travel Planner
 """
 
 import streamlit as st
@@ -8,8 +8,11 @@ import json
 import os
 import re
 import time
+import uuid
 from dotenv import load_dotenv
 from openai import OpenAI
+import pandas as pd
+from io import BytesIO
 
 # Load environment variables
 load_dotenv()
@@ -18,6 +21,7 @@ load_dotenv()
 from overarching_bot import plan_trip, Strategy, parse_user_input
 from airline_codes import get_airline_with_code, resolve_airline_code
 from weather import get_weather_forecast
+from events_bot import search_events
 
 # Initialize OpenAI client
 client = OpenAI(timeout=30.0)
@@ -26,6 +30,7 @@ client = OpenAI(timeout=30.0)
 MAX_CHAT_HISTORY = 50
 API_TIMEOUT = 30
 RATE_LIMIT_SECONDS = 2
+MAX_TRIP_HISTORY = 20
 
 # Page config
 st.set_page_config(
@@ -80,8 +85,251 @@ st.markdown("""
         font-size: 0.8rem;
         display: inline-block;
     }
+    .events-container {
+        max-height: 400px;
+        overflow-y: auto;
+        padding: 10px;
+        background: #f8f9fa;
+        border-radius: 10px;
+        margin: 10px 0;
+        border: 1px solid #4ECDC4;
+    }
+    .event-day {
+        margin-bottom: 15px;
+        padding: 10px;
+        background: white;
+        border-radius: 8px;
+        border-left: 3px solid #4ECDC4;
+    }
+    .event-item {
+        padding: 5px 0;
+        border-bottom: 1px solid #eee;
+        font-size: 0.9rem;
+    }
+    .event-item:last-child {
+        border-bottom: none;
+    }
+    
+    /* Trip History Styles */
+    .history-item {
+        background: white;
+        padding: 12px;
+        border-radius: 8px;
+        margin: 8px 0;
+        border-left: 4px solid #4ECDC4;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .history-item:hover {
+        transform: translateX(5px);
+        border-left: 4px solid #FF6B6B;
+        background: #f0f0f0;
+    }
+    .history-item.current {
+        border-left: 4px solid #FF6B6B;
+        background: #fff0f0;
+    }
+    
+    /* Trip card button styling */
+    .stButton > button[key*="trip_"] {
+        white-space: normal !important;
+        word-wrap: break-word !important;
+        text-align: left !important;
+        height: auto !important;
+        min-height: 100px !important;
+        padding: 15px !important;
+        background: white !important;
+        border: 2px solid #4ECDC4 !important;
+        border-radius: 10px !important;
+        color: #2D3436 !important;
+        font-weight: normal !important;
+        line-height: 1.5 !important;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
+        transition: all 0.2s !important;
+    }
+    
+    .stButton > button[key*="trip_"]:hover {
+        border-color: #FF6B6B !important;
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.15) !important;
+    }
+    
+    .stButton > button[key*="trip_"] strong {
+        font-size: 1.1rem !important;
+        color: #FF6B6B !important;
+        display: block !important;
+        margin-bottom: 5px !important;
+    }
+    
+    .stButton > button[key*="trip_"] small {
+        font-size: 0.9rem !important;
+        color: #666 !important;
+        display: block !important;
+    }
+    
+    .stButton > button[key*="trip_"] small:last-child {
+        color: #4ECDC4 !important;
+        font-weight: bold !important;
+        margin-top: 5px !important;
+    }
+    
+    /* Delete button styling - PERFECT CENTERING */
+    .stButton > button[key*="del_"] {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        height: 100px !important;
+        width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        background: white !important;
+        border: 2px solid #FF6B6B !important;
+        border-radius: 10px !important;
+        font-size: 2rem !important;
+        line-height: 1 !important;
+        color: #FF6B6B !important;
+        transition: all 0.2s !important;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
+    }
+    
+    .stButton > button[key*="del_"]:hover {
+        background: #FF6B6B !important;
+        color: white !important;
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.15) !important;
+        border-color: #FF6B6B !important;
+    }
+    
+    /* Save button styling */
+    div.stDownloadButton > button {
+        background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
+        color: white;
+        border: none;
+        border-radius: 25px;
+        padding: 0.5rem 2rem;
+        font-weight: 600;
+        width: 100%;
+    }
+    div.stDownloadButton > button:hover {
+        opacity: 0.9;
+    }
+    
+    /* General button styling for other buttons */
+    .stButton > button:not([key*="trip_"]):not([key*="del_"]) {
+        background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
+        color: white;
+        border: none;
+        border-radius: 25px;
+        padding: 0.5rem 1rem;
+        font-weight: 600;
+        transition: opacity 0.2s;
+    }
+    .stButton > button:not([key*="trip_"]):not([key*="del_"]):hover {
+        opacity: 0.9;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ==========================================================
+# TRIP HISTORY FUNCTIONS
+# ==========================================================
+
+def save_trip_to_history():
+    """Save current trip to history - auto-save on any change"""
+    if not st.session_state.trip_result:
+        return
+    
+    # Generate unique ID if new trip
+    if st.session_state.current_trip_id == -1:
+        st.session_state.current_trip_id = str(uuid.uuid4())[:8]
+    
+    # Find if this trip already exists
+    existing_index = None
+    for i, trip in enumerate(st.session_state.trip_history):
+        if trip.get("id") == st.session_state.current_trip_id:
+            existing_index = i
+            break
+    
+    # Create trip record with complete state
+    trip_record = {
+        "id": st.session_state.current_trip_id,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "origin": st.session_state.current_params['origin'],
+        "destination": st.session_state.current_params['destination'],
+        "dates": f"{st.session_state.current_params['departure_date']} to {st.session_state.current_params['return_date']}",
+        "total_cost": st.session_state.trip_result.get('data', {}).get('total_cost', 0),
+        "result": st.session_state.trip_result,
+        "params": st.session_state.current_params.copy(),
+        "chat_history": st.session_state.chat_history.copy(),
+        "events": st.session_state.current_events,
+        "events_data": st.session_state.current_events_data,
+        "excluded_ids": st.session_state.excluded_event_ids.copy(),
+        "optimization_iterations": st.session_state.optimization_iterations.copy(),
+        "weather_cache": st.session_state.weather_cache.copy(),
+    }
+    
+    # Update or insert
+    if existing_index is not None:
+        st.session_state.trip_history[existing_index] = trip_record
+    else:
+        st.session_state.trip_history.insert(0, trip_record)
+    
+    # Keep only last MAX_TRIP_HISTORY
+    if len(st.session_state.trip_history) > MAX_TRIP_HISTORY:
+        st.session_state.trip_history = st.session_state.trip_history[:MAX_TRIP_HISTORY]
+
+
+def load_trip_from_history(trip_id):
+    """Load a complete trip from history - restores all state"""
+    for trip in st.session_state.trip_history:
+        if trip["id"] == trip_id:
+            # Restore all state
+            st.session_state.trip_result = trip["result"]
+            st.session_state.current_params = trip["params"].copy()
+            st.session_state.chat_history = trip["chat_history"].copy()
+            st.session_state.current_events = trip.get("events")
+            st.session_state.current_events_data = trip.get("events_data")
+            st.session_state.excluded_event_ids = trip.get("excluded_ids", []).copy()
+            st.session_state.optimization_iterations = trip.get("optimization_iterations", []).copy()
+            st.session_state.weather_cache = trip.get("weather_cache", {}).copy()
+            st.session_state.current_trip_id = trip["id"]
+            st.rerun()
+            return
+    
+    st.error("Trip not found in history")
+
+
+def delete_trip_from_history(trip_id):
+    """Delete a trip from history"""
+    st.session_state.trip_history = [t for t in st.session_state.trip_history if t["id"] != trip_id]
+    
+    # If current trip was deleted, clear it
+    if st.session_state.current_trip_id == trip_id:
+        st.session_state.trip_result = None
+        st.session_state.chat_history = []
+        st.session_state.current_events = None
+        st.session_state.current_events_data = None
+        st.session_state.excluded_event_ids = []
+        st.session_state.optimization_iterations = []
+        st.session_state.weather_cache = {}
+        st.session_state.current_trip_id = -1
+    
+    st.rerun()
+
+
+def start_new_trip():
+    """Start a fresh new trip"""
+    st.session_state.trip_result = None
+    st.session_state.chat_history = []
+    st.session_state.current_events = None
+    st.session_state.current_events_data = None
+    st.session_state.excluded_event_ids = []
+    st.session_state.optimization_iterations = []
+    st.session_state.weather_cache = {}
+    st.session_state.current_trip_id = -1
+    st.session_state.processing_message = False
+    st.rerun()
 
 
 # ==========================================================
@@ -222,9 +470,350 @@ CHAT_FUNCTIONS = [
                 "required": ["preference"]
             }
         }
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_events",
+            "description": "Search for local events, concerts, festivals, sports, food events, or things to do during your trip",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "preferences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "What kind of events? Examples: ['music'], ['sports', 'food'], ['family', 'outdoor'], ['concerts', 'festivals']",
+                    }
+                },
+                "required": [],
+            },
+        }
+    }  
 ]
 
+# ==========================================================
+# EXPORT FUNCTIONS
+# ==========================================================
+
+def generate_trip_summary_text(trip_result, params, events_data=None, weather_info=None):
+    """Generate plain text summary of trip including events"""
+    data = trip_result.get("data", {})
+    flights = data.get("flights", [])
+    hotel = data.get("hotel", {})
+    metadata = trip_result.get("metadata", {})
+    
+    lines = []
+    lines.append("=" * 60)
+    lines.append("AI TRAVEL PLANNER - TRIP SUMMARY")
+    lines.append("=" * 60)
+    lines.append("")
+    lines.append(f"Trip: {params['origin']} → {params['destination']}")
+    lines.append(f"Dates: {params['departure_date']} to {params['return_date']}")
+    lines.append(f"Budget: ${params['total_budget']:.2f}")
+    lines.append(f"Strategy: {params['strategy']}")
+    lines.append("")
+    lines.append("-" * 40)
+    lines.append("COST SUMMARY")
+    lines.append("-" * 40)
+    lines.append(f"Total Cost: ${data.get('total_cost', 0):.2f}")
+    lines.append(f"Remaining Budget: ${data.get('remaining_budget', 0):.2f}")
+    if data.get('flight_ratio'):
+        lines.append(f"Allocation: {data['flight_ratio']*100:.0f}% flights / {data['hotel_ratio']*100:.0f}% hotels")
+    lines.append("")
+    
+    lines.append("-" * 40)
+    lines.append("FLIGHTS")
+    lines.append("-" * 40)
+    if flights:
+        for i, flight in enumerate(flights, 1):
+            lines.append(f"Flight {i}: {flight.get('airline', 'Unknown')} {flight.get('flight_number', '')}")
+            lines.append(f"  From: {flight.get('home_airport')} → {flight.get('destination')}")
+            lines.append(f"  Depart: {flight.get('departure_date', 'N/A')}")
+            lines.append(f"  Arrive: {flight.get('arrival_date', 'N/A')}")
+            lines.append(f"  Duration: {flight.get('duration', 'N/A')}")
+            lines.append(f"  Cost: ${flight.get('cost', 0):.2f}")
+            lines.append("")
+    else:
+        lines.append("No flights booked")
+        lines.append("")
+    
+    lines.append("-" * 40)
+    lines.append("HOTEL")
+    lines.append("-" * 40)
+    if hotel:
+        lines.append(f"Name: {hotel.get('name', 'Unknown')}")
+        if hotel.get('rating'):
+            lines.append(f"Rating: {hotel.get('rating')}⭐")
+        lines.append(f"Cost: ${hotel.get('total', 0):.2f}")
+        lines.append(f"Check-in: {params['departure_date']}")
+        lines.append(f"Check-out: {params['return_date']}")
+    else:
+        lines.append("No hotel booked")
+    lines.append("")
+    
+    # EVENTS SECTION
+    if events_data and events_data.get("events"):
+        lines.append("-" * 40)
+        lines.append("LOCAL EVENTS")
+        lines.append("-" * 40)
+        
+        # Group events by date
+        events_by_date = {}
+        for event in events_data.get("events", []):
+            date_key = event.get("start_date", "unknown")
+            if date_key not in events_by_date:
+                events_by_date[date_key] = []
+            events_by_date[date_key].append(event)
+        
+        # Sort dates
+        sorted_dates = sorted([d for d in events_by_date.keys() if d != "unknown"])
+        
+        for date_key in sorted_dates:
+            try:
+                dt = datetime.fromisoformat(date_key)
+                formatted_date = dt.strftime("%A, %B %d")
+            except:
+                formatted_date = date_key
+            
+            lines.append(f"\n{formatted_date}:")
+            for event in events_by_date[date_key]:
+                title = event.get("title", "Unknown Event")
+                time_str = event.get("start_time", "")
+                venue = event.get("venue", "")
+                
+                event_line = f"  • {title}"
+                if time_str and time_str != "All day":
+                    event_line += f" at {time_str}"
+                if venue:
+                    event_line += f" @ {venue}"
+                lines.append(event_line)
+        
+        lines.append("")
+    
+    # WEATHER SECTION
+    if weather_info:
+        lines.append("-" * 40)
+        lines.append("WEATHER FORECAST")
+        lines.append("-" * 40)
+        lines.append(f"Temperature: {weather_info.get('temperature', 'N/A')}°F")
+        lines.append(f"Conditions: {weather_info.get('description', 'N/A')}")
+        if weather_info.get('humidity'):
+            lines.append(f"Humidity: {weather_info['humidity']}%")
+        if weather_info.get('wind'):
+            lines.append(f"Wind: {weather_info['wind']} mph")
+        lines.append("")
+    
+    lines.append("=" * 60)
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("=" * 60)
+    
+    return "\n".join(lines)
+
+
+def generate_excel_export(trip_result, params, events_data=None, weather_info=None):
+    """Generate Excel file with multiple sheets including events and weather"""
+    data = trip_result.get("data", {})
+    flights = data.get("flights", [])
+    hotel = data.get("hotel", {})
+    metadata = trip_result.get("metadata", {})
+    
+    # Create Excel file in memory
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Summary sheet
+        summary_data = {
+            "Item": ["Origin", "Destination", "Departure", "Return", "Budget", "Strategy", 
+                    "Total Cost", "Remaining Budget"],
+            "Value": [
+                params['origin'],
+                params['destination'],
+                params['departure_date'],
+                params['return_date'],
+                f"${params['total_budget']:.2f}",
+                params['strategy'],
+                f"${data.get('total_cost', 0):.2f}",
+                f"${data.get('remaining_budget', 0):.2f}"
+            ]
+        }
+        pd.DataFrame(summary_data).to_excel(writer, sheet_name="Summary", index=False)
+        
+        # Flights sheet
+        if flights:
+            flights_data = []
+            for i, flight in enumerate(flights, 1):
+                flights_data.append({
+                    "Flight #": i,
+                    "Airline": flight.get('airline', 'Unknown'),
+                    "Flight Number": flight.get('flight_number', ''),
+                    "From": flight.get('home_airport'),
+                    "To": flight.get('destination'),
+                    "Departure": flight.get('departure_date'),
+                    "Arrival": flight.get('arrival_date'),
+                    "Duration": flight.get('duration'),
+                    "Cost": flight.get('cost', 0)
+                })
+            pd.DataFrame(flights_data).to_excel(writer, sheet_name="Flights", index=False)
+        else:
+            pd.DataFrame(["No flights"]).to_excel(writer, sheet_name="Flights", index=False)
+        
+        # Hotel sheet
+        if hotel:
+            hotel_data = {
+                "Name": [hotel.get('name', 'Unknown')],
+                "Rating": [hotel.get('rating', 'N/A')],
+                "Cost": [hotel.get('total', 0)],
+                "Check-in": [params['departure_date']],
+                "Check-out": [params['return_date']]
+            }
+            pd.DataFrame(hotel_data).to_excel(writer, sheet_name="Hotel", index=False)
+        else:
+            pd.DataFrame(["No hotel"]).to_excel(writer, sheet_name="Hotel", index=False)
+        
+        # EVENTS SHEET
+        if events_data and events_data.get("events"):
+            events_list = []
+            for event in events_data.get("events", []):
+                events_list.append({
+                    "Date": event.get("start_date", ""),
+                    "Time": event.get("start_time", ""),
+                    "Event": event.get("title", ""),
+                    "Category": event.get("category_name", event.get("category", "")),
+                    "Venue": event.get("venue", ""),
+                    "Description": event.get("description", "")[:100] if event.get("description") else "",
+                })
+            pd.DataFrame(events_list).to_excel(writer, sheet_name="Events", index=False)
+        
+        # Weather sheet
+        if weather_info:
+            weather_data = {
+                "Metric": ["Temperature", "Conditions", "Humidity", "Wind"],
+                "Value": [
+                    f"{weather_info.get('temperature', 'N/A')}°F",
+                    weather_info.get('description', 'N/A'),
+                    f"{weather_info.get('humidity', 'N/A')}%",
+                    f"{weather_info.get('wind', 'N/A')} mph"
+                ]
+            }
+            pd.DataFrame(weather_data).to_excel(writer, sheet_name="Weather", index=False)
+    
+    output.seek(0)
+    return output
+
+
+def generate_csv_export(trip_result, params, events_data=None, weather_info=None):
+    """Generate CSV export"""
+    data = trip_result.get("data", {})
+    flights = data.get("flights", [])
+    hotel = data.get("hotel", {})
+    
+    lines = ["Type,Detail,Value"]
+    lines.append(f"Trip,Origin,{params['origin']}")
+    lines.append(f"Trip,Destination,{params['destination']}")
+    lines.append(f"Trip,Dates,{params['departure_date']} to {params['return_date']}")
+    lines.append(f"Budget,Total,${params['total_budget']:.2f}")
+    lines.append(f"Cost,Total,${data.get('total_cost', 0):.2f}")
+    
+    for i, flight in enumerate(flights):
+        lines.append(f"Flight {i+1},Airline,{flight.get('airline')}")
+        lines.append(f"Flight {i+1},Number,{flight.get('flight_number')}")
+        lines.append(f"Flight {i+1},Cost,${flight.get('cost', 0):.2f}")
+    
+    if hotel:
+        lines.append(f"Hotel,Name,{hotel.get('name')}")
+        lines.append(f"Hotel,Cost,${hotel.get('total', 0):.2f}")
+    
+    # Add events
+    if events_data and events_data.get("events"):
+        lines.append("")
+        lines.append("EVENTS")
+        for event in events_data.get("events", []):
+            lines.append(f"Event,{event.get('start_date')},{event.get('title')}")
+    
+    # Add weather
+    if weather_info:
+        lines.append("")
+        lines.append("WEATHER")
+        lines.append(f"Weather,Temperature,{weather_info.get('temperature', 'N/A')}°F")
+        lines.append(f"Weather,Conditions,{weather_info.get('description', 'N/A')}")
+    
+    return "\n".join(lines)
+
+def generate_word_export(trip_result, params, events_data=None, weather_info=None):
+    """Generate Word document export"""
+    try:
+        from docx import Document
+        from docx.shared import Inches
+        doc = Document()
+        
+        data = trip_result.get("data", {})
+        flights = data.get("flights", [])
+        hotel = data.get("hotel", {})
+        metadata = trip_result.get("metadata", {})
+        
+        # Title
+        doc.add_heading(f'Trip Plan: {params["origin"]} → {params["destination"]}', 0)
+        
+        # Trip Details
+        doc.add_heading('Trip Details', level=1)
+        doc.add_paragraph(f'Dates: {params["departure_date"]} to {params["return_date"]}')
+        doc.add_paragraph(f'Budget: ${params["total_budget"]:.2f}')
+        doc.add_paragraph(f'Strategy: {params["strategy"]}')
+        
+        # Cost Summary
+        doc.add_heading('Cost Summary', level=1)
+        doc.add_paragraph(f'Total Cost: ${data.get("total_cost", 0):.2f}')
+        doc.add_paragraph(f'Remaining Budget: ${data.get("remaining_budget", 0):.2f}')
+        
+        # Flights
+        doc.add_heading('Flights', level=1)
+        if flights:
+            for i, flight in enumerate(flights, 1):
+                doc.add_heading(f'Flight {i}', level=2)
+                doc.add_paragraph(f'Airline: {flight.get("airline", "Unknown")} {flight.get("flight_number", "")}')
+                doc.add_paragraph(f'From: {flight.get("home_airport")} → {flight.get("destination")}')
+                doc.add_paragraph(f'Depart: {flight.get("departure_date", "N/A")}')
+                doc.add_paragraph(f'Arrive: {flight.get("arrival_date", "N/A")}')
+                doc.add_paragraph(f'Duration: {flight.get("duration", "N/A")}')
+                doc.add_paragraph(f'Cost: ${flight.get("cost", 0):.2f}')
+        else:
+            doc.add_paragraph('No flights booked')
+        
+        # Hotel
+        doc.add_heading('Hotel', level=1)
+        if hotel:
+            doc.add_paragraph(f'Name: {hotel.get("name", "Unknown")}')
+            if hotel.get('rating'):
+                doc.add_paragraph(f'Rating: {hotel.get("rating")}⭐')
+            doc.add_paragraph(f'Cost: ${hotel.get("total", 0):.2f}')
+        else:
+            doc.add_paragraph('No hotel booked')
+        
+        # Events
+        if events_data and events_data.get("events"):
+            doc.add_heading('Local Events', level=1)
+            for event in events_data.get("events", []):
+                doc.add_paragraph(
+                    f'• {event.get("title")} - {event.get("start_date")}',
+                    style='List Bullet'
+                )
+        
+        # Weather
+        if weather_info:
+            doc.add_heading('Weather', level=1)
+            doc.add_paragraph(f'Temperature: {weather_info.get("temperature", "N/A")}°F')
+            doc.add_paragraph(f'Conditions: {weather_info.get("description", "N/A")}')
+        
+        # Save to bytes
+        from io import BytesIO
+        doc_bytes = BytesIO()
+        doc.save(doc_bytes)
+        doc_bytes.seek(0)
+        return doc_bytes.getvalue()
+        
+    except ImportError:
+        # Fallback to text if python-docx not installed
+        content = generate_trip_summary_text(trip_result, params, events_data, weather_info)
+        return content.encode()
 
 def execute_functions(function_calls: list, current_params: dict, trip_result: dict) -> dict:
     """Execute multiple function calls and return updates."""
@@ -290,6 +879,29 @@ def execute_functions(function_calls: list, current_params: dict, trip_result: d
             all_results.append(f"FIND_BETTER_HOTEL: current rating {current_rating}⭐")
             all_updates["find_better_hotel"] = True
             should_replan = True
+        
+        elif function_name == "search_events":
+            preferences = arguments.get("preferences", [])
+            
+            # Search for events (returns raw data only)
+            events_result = search_events(
+                destination=st.session_state.current_params['destination'],
+                start_date=st.session_state.current_params['departure_date'],
+                end_date=st.session_state.current_params['return_date'],
+                preferences=preferences,
+                exclude_ids=st.session_state.excluded_event_ids,
+                max_events=8,
+            )
+            
+            # Store events for panel display
+            if events_result["has_events"]:
+                st.session_state.current_events = events_result["panel_html"]
+                st.session_state.current_events_data = events_result
+                st.session_state.excluded_event_ids = events_result["event_ids"]
+            
+            # Return RAW DATA - LLM will generate response
+            all_results.append(json.dumps(events_result))
+            should_replan = False
         
         elif function_name in ["search_flights", "search_hotels"]:
             should_replan = True
@@ -361,6 +973,19 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
         dest = metadata.get('destination', '')
         weather_info = st.session_state.weather_cache.get(dest)
     
+    # Parse any event data from function results
+    event_data = None
+    if function_results:
+        for result in function_results:
+            try:
+                # Try to parse as JSON (event data)
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and "has_events" in parsed:
+                    event_data = parsed
+                    break
+            except:
+                pass
+    
     context = {
         "current_trip": {
             "origin": metadata.get("origin", "Unknown"),
@@ -374,29 +999,12 @@ def get_conversational_response(user_message: str, trip_data: dict, chat_history
             "iterations_used": f"{trip_data.get('data', {}).get('iterations_used', 0)}/{metadata.get('max_iterations', 5)}",
             "red_eye_enabled": metadata.get('prefer_red_eyes', False),
             "red_eye_flights_found": red_eye_count,
-            "weather": weather_info,
-            "recommended_events": [
-                (e.get("title") or "Event") + (f" ({(e.get('start') or '')[:10]})" if e.get("start") else "")
-                for e in trip_data.get('data', {}).get('recommended_events', [])
-            ]
+            "weather": weather_info
         },
         "flights": "\n".join(flight_info) if flight_info else "No flights found.",
-        "hotel": "\n".join(hotel_info) if hotel_info else "No hotel found."
+        "hotel": "\n".join(hotel_info) if hotel_info else "No hotel found.",
+        "events": event_data
     }
-    
-    # Parse function results for better context
-    upgrade_info = None
-    if function_results:
-        for result in function_results:
-            if "UPGRADE_SUCCESS" in result:
-                # Extract ratings from result
-                parts = result.split("Found a ")
-                if len(parts) > 1:
-                    upgrade_info = parts[1]
-            elif "FOUND_ALTERNATIVE" in result:
-                upgrade_info = "alternative"
-            elif "NO_BETTER_HOTEL" in result:
-                upgrade_info = "none_found"
     
     system_prompt = f"""You are a friendly and knowledgeable travel assistant. Your role is to help users plan their trip by having natural conversations.
 
@@ -406,10 +1014,19 @@ CURRENT TRIP CONTEXT:
 WEATHER INFORMATION:
 {json.dumps(weather_info, indent=2) if weather_info else "No weather data available"}
 
-RECENT ACTIONS RESULTS:
+RECENT FUNCTION RESULTS (including event data if any):
 {json.dumps(function_results, indent=2) if function_results else "No recent changes"}
 
-UPGRADE STATUS: {upgrade_info if upgrade_info else "No upgrade requested"}
+You have access to these functions:
+- search_flights: Find new flight options
+- search_hotels: Find new hotel options
+- adjust_budget: Change total budget
+- change_strategy: Change allocation strategy
+- adjust_iterations: Change optimization attempts
+- update_dates: Change travel dates
+- update_preferences: Enable/disable red-eye flights
+- find_better_hotel: Find higher rated or different hotel
+- search_events: Find local events during your trip
 
 Guidelines for your responses:
 1. Be conversational and friendly - use emojis appropriately
@@ -422,12 +1039,43 @@ Guidelines for your responses:
 8. If red-eye is enabled and flights found, mention you found overnight options
 9. If no red-eye flights available, suggest they try different dates
 10. When finding better hotels:
-    - If UPGRADE_SUCCESS: Be excited! Mention the rating improvement
-    - If FOUND_ALTERNATIVE: Mention you found another option with same rating
+    - If UPGRADE_SUCCESS: Be excited! Mention the rating improvement and ask what you can help with next.
+    - If FOUND_ALTERNATIVE: Mention you found another option with same rating to stay within budget
     - If NO_BETTER_HOTEL: Explain no better options found and suggest increasing budget
-    - Don't just say "searching" - respond to what actually happened
+    - Don't just say "searching" - respond to what actually happened which already presented to the user.
+    
+11. WHEN YOU SEARCH FOR EVENTS:
+    - You'll receive data about what was found. Use this to craft natural responses.
 
-Remember: You're helping a real person plan their vacation. Be excited for them!"""
+    IF EVENTS WERE FOUND:
+    - Mention the total number of events found
+    - Highlight 1-2 interesting events (title, day, category)
+    - Reference that they can see all events in the panel above
+    - Ask if they want more like a specific type or different categories
+
+    Example tone (NOT hardcoded - just examples):
+    - "Great news! I found 8 events in New York! There's a Knicks game on Wednesday and Hamilton on Thursday - both look amazing! Check out the panel above for all the details. Want me to find more concerts like the jazz one?"
+    - "Found 4 food events during your stay! The Taste of NYC festival on Tuesday has 100+ vendors. Take a look at the panel - any of these catch your eye?"
+    - "I searched for music events and found 6 shows! The Blue Note has jazz on Friday night that's really popular. Want to see more options or try a different category?"
+
+    IF NO EVENTS FOUND:
+    - Be helpful and suggest trying different preferences or dates
+    - Example: "I couldn't find any events matching '{{preferences}}' in {destination}. Want to try different dates or maybe explore food festivals instead?"
+
+    IF USER ASKS FOR "MORE LIKE THAT":
+    - They want similar events (same category)
+    - You can call search_events again with refined preferences
+
+    IF USER ASKS FOR "DIFFERENT" EVENTS:
+    - They want different categories than what they saw
+    - Call search_events with new preferences
+
+    WHEN DATES OR FLIGHTS OR HOTELS CHANGE:
+    - If user previously asked for events, ASK if they want to search again 
+    - Example: "I've updated your dates. Would you like me to search for events during your new stay dates?"
+    - Do NOT assume they want events automatically
+
+Remember: You're helping a real person plan their vacation. Be excited for them! Be enthusiastic, reference the panel, and always offer next steps naturally!"""
     
     messages = [
         {"role": "system", "content": system_prompt},
@@ -484,9 +1132,10 @@ Available functions:
 - update_dates: When user wants to change travel dates
 - update_preferences: When user wants to enable/disable red-eye flights
 - find_better_hotel: When user says 'find better hotel', 'better hotel', 'upgrade hotel'
+- search_events: When user wants to find local events, things to do, concerts, etc.
 
 If the user is just asking a question or having a conversation, do NOT call any functions.
-Only call functions when they explicitly want to make changes to the trip.
+Only call functions when they explicitly want to make changes to the trip, search for events, or update their preferences.
 You can call multiple functions if the user makes multiple requests in one message."""
 
     messages = [
@@ -547,6 +1196,16 @@ if 'optimization_iterations' not in st.session_state:
     st.session_state.optimization_iterations = []
 if 'weather_cache' not in st.session_state:
     st.session_state.weather_cache = {}
+if 'current_events' not in st.session_state:
+    st.session_state.current_events = None
+if 'current_events_data' not in st.session_state:
+    st.session_state.current_events_data = None
+if 'excluded_event_ids' not in st.session_state:
+    st.session_state.excluded_event_ids = []
+if 'trip_history' not in st.session_state:
+    st.session_state.trip_history = []
+if 'current_trip_id' not in st.session_state:
+    st.session_state.current_trip_id = -1
 if 'current_params' not in st.session_state:
     st.session_state.current_params = {
         'origin': 'San Francisco',
@@ -556,7 +1215,6 @@ if 'current_params' not in st.session_state:
         'total_budget': 1500.0,
         'strategy': 'cheapest_overall',
         'prefer_red_eyes': False,
-        'adults': 1,
         'max_iterations': 5,
     }
 if 'last_chat_time' not in st.session_state:
@@ -565,6 +1223,10 @@ if 'show_debug' not in st.session_state:
     st.session_state.show_debug = False
 if 'processing_message' not in st.session_state:
     st.session_state.processing_message = False
+if 'show_save_dialog' not in st.session_state:
+    st.session_state.show_save_dialog = False
+if 'save_format' not in st.session_state:
+    st.session_state.save_format = "Text (.txt)"
 
 
 # ==========================================================
@@ -574,13 +1236,13 @@ if 'processing_message' not in st.session_state:
 st.markdown("""
 <div class="main-header">
     <h1>✈️ AI TRAVEL PLANNER</h1>
-    <p>Your Personal Travel Assistant with Natural Conversations</p>
+    <p>Your Personal AI Travel Assistant ✈️ Flights 🏨 Hotels 🎉 Events 🌤️ Weather 💬 Chat</p>
 </div>
 """, unsafe_allow_html=True)
 
 
 # ==========================================================
-# SIDEBAR - Trip Parameters
+# SIDEBAR - Trip Parameters & History (removed adults)
 # ==========================================================
 
 with st.sidebar:
@@ -639,13 +1301,6 @@ with st.sidebar:
         if prefer_red_eyes != st.session_state.current_params['prefer_red_eyes']:
             st.session_state.current_params['prefer_red_eyes'] = prefer_red_eyes
             st.rerun()
-    with col4:
-        adults = st.number_input(
-            "Adults",
-            min_value=1,
-            max_value=4,
-            value=st.session_state.current_params['adults']
-        )
     
     max_iterations = st.slider(
         "Optimization Attempts",
@@ -657,6 +1312,7 @@ with st.sidebar:
     show_debug = st.checkbox("🔧 Show Debug Info", value=st.session_state.show_debug)
     st.session_state.show_debug = show_debug
     
+    # Plan New Trip Button
     if st.button("🔍 Plan New Trip", use_container_width=True, disabled=not valid_dates):
         st.session_state.current_params.update({
             'origin': origin,
@@ -666,9 +1322,13 @@ with st.sidebar:
             'total_budget': float(total_budget),
             'strategy': strategy,
             'prefer_red_eyes': prefer_red_eyes,
-            'adults': adults,
             'max_iterations': max_iterations,
         })
+        
+        # Clear events when planning new trip
+        st.session_state.current_events = None
+        st.session_state.current_events_data = None
+        st.session_state.excluded_event_ids = []
         
         with st.spinner("Planning your perfect trip..."):
             try:
@@ -680,7 +1340,6 @@ with st.sidebar:
                     total_budget=float(total_budget),
                     strategy=Strategy(strategy),
                     prefer_red_eyes=prefer_red_eyes,
-                    adults=adults,
                     max_iterations=max_iterations,
                 )
                 
@@ -690,14 +1349,19 @@ with st.sidebar:
                 # Clear old weather and fetch new
                 st.session_state.weather_cache = {}
                 
-                # Get a warm welcome
+                # Get a warm welcome with trip context
+                trip_context = f"I just planned a trip from {origin} to {destination} from {departure.strftime('%B %d')} to {return_date.strftime('%B %d')} with a budget of ${total_budget}. Can you welcome me and help me with my trip?"
+
                 welcome_message = get_conversational_response(
-                    "I just planned my first trip. Can you help me with it?",
+                    trip_context,
                     result,
                     [],
                     None
                 )
                 st.session_state.chat_history = [{"role": "assistant", "message": welcome_message}]
+                
+                # Save to history (auto-save)
+                save_trip_to_history()
                 
                 st.rerun()
                 
@@ -705,9 +1369,47 @@ with st.sidebar:
                 st.error(f"Error: {str(e)}")
     
     st.markdown("---")
+    
+    # Current Trip Summary
     if st.session_state.trip_result:
         total = st.session_state.trip_result.get("data", {}).get("total_cost", 0)
         st.metric("Current Total", f"${total:.2f}")
+    
+    # ==========================================================
+    # TRIP HISTORY SECTION
+    # ==========================================================
+    st.markdown("### 📜 Trip History")
+    
+    # New Trip Button
+    if st.button("➕ Start New Trip", use_container_width=True):
+        start_new_trip()
+    
+    # Display trip history
+    if st.session_state.trip_history:
+        st.markdown("---")
+        for trip in st.session_state.trip_history[:5]:  # Show last 5 trips
+            # Determine if this is the current trip
+            is_current = trip["id"] == st.session_state.current_trip_id
+            
+            # Create columns for trip display and delete button
+            col1, col2 = st.columns([0.9, 0.1])
+            
+            with col1:
+                # Clickable trip card
+                if st.button(
+                    f"**{trip['origin']} → {trip['destination']}**\n\n{trip['dates']}\n\n💰 ${trip['total_cost']:.0f}",
+                    key=f"trip_{trip['id']}",
+                    use_container_width=True,
+                    help="Click to load this trip"
+                ):
+                    load_trip_from_history(trip["id"])
+            
+            with col2:
+                # Delete button
+                if st.button("X ", key=f"del_{trip['id']}", help="Delete this trip"):
+                    delete_trip_from_history(trip["id"])
+    else:
+        st.caption("No past trips yet")
 
 
 # ==========================================================
@@ -727,19 +1429,7 @@ with col_main:
         with col1:
             st.metric("Total Cost", f"${data.get('total_cost', 0):.2f}")
         with col2:
-            remaining = float(data.get('remaining_budget', 0) or 0)
-            if remaining < 0:
-                st.markdown(
-                    '<div style="background-color: rgba(49, 51, 63, 0.6); padding: 1rem 1rem 1rem 1rem; '
-                    'border-radius: 0.5rem; border: 1px solid rgba(250, 250, 250, 0.2);">'
-                    '<p style="color: rgba(250, 250, 250, 0.6); font-size: 0.875rem; margin: 0 0 0.25rem 0;">Remaining</p>'
-                    f'<p style="color: #ff4b4b; font-size: 1.5rem; font-weight: 600; margin: 0;" '
-                    f'title="You are over budget">${remaining:.2f}</p>'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.metric("Remaining", f"${remaining:.2f}")
+            st.metric("Remaining", f"${data.get('remaining_budget', 0):.2f}")
         with col3:
             if data.get('flight_ratio'):
                 st.metric("Flights %", f"{data['flight_ratio']*100:.0f}%")
@@ -757,6 +1447,91 @@ with col_main:
         # Red-eye indicator
         if metadata.get('prefer_red_eyes', False):
             st.markdown('<span class="red-eye-badge">🌙 Red-eye mode enabled</span>', unsafe_allow_html=True)
+        
+        # ==========================================================
+        # SAVE BUTTON AND DIALOG
+        # ==========================================================
+        col_save1, col_save2, col_save3 = st.columns([1, 2, 1])
+        with col_save2:
+            if st.button("💾 Save Trip", use_container_width=True, key="show_save_dialog_btn"):
+                st.session_state.show_save_dialog = True
+                st.rerun()
+        
+        # Save Dialog
+        if st.session_state.show_save_dialog:
+            with st.container():
+                st.markdown("---")
+                st.markdown("### 💾 Save Trip")
+                
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    # Format selection
+                    format_options = ["Text (.txt)", "Excel (.xlsx)", "Word (.docx)", "CSV (.csv)"]
+                    format_idx = format_options.index(st.session_state.save_format) if st.session_state.save_format in format_options else 0
+                    save_format = st.selectbox("Select format", format_options, index=format_idx, key="format_select")
+                    st.session_state.save_format = save_format
+                
+                with col_f2:
+                    # Filename
+                    default_name = f"Trip_{metadata.get('origin', 'Trip')}_to_{metadata.get('destination', 'Dest')}"
+                    filename = st.text_input("Filename", value=default_name, key="filename_input")
+                
+                # Prepare data for download based on current selections
+                events_data = st.session_state.current_events_data
+                weather_info = None
+                if 'weather_cache' in st.session_state and metadata.get('destination') in st.session_state.weather_cache:
+                    weather_info = st.session_state.weather_cache[metadata.get('destination')]
+                
+                # Generate file data based on selected format
+                file_data = None
+                mime_type = None
+                file_ext = ""
+                
+                if save_format == "Text (.txt)":
+                    content = generate_trip_summary_text(result, st.session_state.current_params, events_data, weather_info)
+                    file_data = content.encode()
+                    mime_type = "text/plain"
+                    file_ext = "txt"
+                elif save_format == "Excel (.xlsx)":
+                    excel_data = generate_excel_export(result, st.session_state.current_params, events_data, weather_info)
+                    file_data = excel_data.getvalue()
+                    mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    file_ext = "xlsx"
+                elif save_format == "Word (.docx)":
+                    file_data = generate_word_export(result, st.session_state.current_params, events_data, weather_info)
+                    mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    file_ext = "docx"
+                elif save_format == "CSV (.csv)":
+                    content = generate_csv_export(result, st.session_state.current_params, events_data, weather_info)
+                    file_data = content.encode()
+                    mime_type = "text/csv"
+                    file_ext = "csv"
+                
+                # Clean filename
+                safe_filename = filename.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                if not safe_filename:
+                    safe_filename = f"Trip_{metadata.get('origin', 'Trip')}_to_{metadata.get('destination', 'Dest')}"
+                
+                full_filename = f"{safe_filename}.{file_ext}"
+                
+                col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
+                with col_b1:
+                    # Download button
+                    st.download_button(
+                        label="📥 Download",
+                        data=file_data,
+                        file_name=full_filename,
+                        mime=mime_type,
+                        key="download_file",
+                        use_container_width=True
+                    )
+                
+                with col_b2:
+                    if st.button("Close", use_container_width=True, key="close_dialog"):
+                        st.session_state.show_save_dialog = False
+                        st.rerun()
+                
+                st.markdown("---")
         
         # Flights
         st.markdown("### ✈️ Your Flights")
@@ -822,33 +1597,12 @@ with col_main:
                 st.markdown(f"**${hotel.get('total', 0):.2f}**")
         else:
             st.info("No hotel found")
-
-        # Recommended events (one per day)
-        st.markdown("### 🎉 Recommended Events")
-        recommended_events = data.get("recommended_events") or []
-        if recommended_events:
-            for i, ev in enumerate(recommended_events, 1):
-                title = ev.get("title") or "Event"
-                start_raw = ev.get("start") or ""
-                category = (ev.get("category") or "").replace("-", " ").title()
-                try:
-                    if start_raw:
-                        dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-                        start_str = dt.strftime("%a, %b %d at %I:%M %p")
-                    else:
-                        start_str = ""
-                except (ValueError, TypeError):
-                    start_str = start_raw[:16] if start_raw else ""
-                with st.container():
-                    st.markdown(f"**Day {i}:** {title}")
-                    if start_str:
-                        st.caption(f"📅 {start_str}")
-                    if category:
-                        st.caption(f"🏷️ {category}")
-                    st.divider()
-        else:
-            st.caption("No events found for your trip dates. Try another destination or date range.")
-
+        
+        # Events Panel
+        if st.session_state.current_events:
+            st.markdown("### 🎉 Local Events")
+            st.markdown(st.session_state.current_events, unsafe_allow_html=True)
+        
         # Weather
         if hotel or flights:
             st.markdown("### 🌤️ Destination Weather")
@@ -948,7 +1702,6 @@ with col_chat:
                         st.session_state.trip_result
                     )
                     
-                    # Store function results but DON'T add to chat yet
                     function_results = exec_result.get("results", [])
                     find_better = exec_result.get("find_better", False)
                     current_hotel_data = exec_result.get("current_hotel")
@@ -971,7 +1724,6 @@ with col_chat:
                                 total_budget=float(st.session_state.current_params['total_budget']),
                                 strategy=Strategy(st.session_state.current_params['strategy']),
                                 prefer_red_eyes=st.session_state.current_params['prefer_red_eyes'],
-                                adults=st.session_state.current_params['adults'],
                                 max_iterations=st.session_state.current_params['max_iterations'],
                                 find_better_hotel=find_better,
                                 current_hotel=current_hotel_data if find_better else None
@@ -1006,12 +1758,15 @@ with col_chat:
                             # Clear weather cache for new search
                             if 'weather_cache' in st.session_state:
                                 st.session_state.weather_cache = {}
+                            
+                            # AUTO-SAVE after any update
+                            save_trip_to_history()
                                 
                         except Exception as e:
                             function_results = [f"Error updating: {str(e)}"]
                             print(f"Replan error: {e}")
                 
-                # Step 4: Get natural language response (this will include upgrade info)
+                # Step 4: Get natural language response
                 response = get_conversational_response(
                     user_message,
                     st.session_state.trip_result,
@@ -1020,6 +1775,9 @@ with col_chat:
                 )
                 
                 st.session_state.chat_history.append({"role": "assistant", "message": response})
+                
+                # AUTO-SAVE after chat
+                save_trip_to_history()
                 
                 # Trim history
                 if len(st.session_state.chat_history) > MAX_CHAT_HISTORY:
@@ -1041,7 +1799,6 @@ with col_chat:
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; padding: 1rem;">
-    <p>Your Personal AI Travel Assistant | Powered by Amadeus, OpenAI & OpenWeatherMap</p>
-    <p style="font-size: 0.8rem;">🌙 Red-eye flights • ⭐ Hotel upgrades • 💬 Natural conversations</p>
+    <p>Your Personal AI Travel Assistant | Powered by Amadeus, OpenAI, OpenWeatherMap & PredictHQ</p>
 </div>
 """, unsafe_allow_html=True)
