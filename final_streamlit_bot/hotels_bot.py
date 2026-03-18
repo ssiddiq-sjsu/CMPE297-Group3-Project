@@ -7,9 +7,6 @@ from typing import List, Dict, Any, Optional
 
 from amadeus_hotels import search_hotels_by_rating, search_hotels_for_trip
 
-"""
-This code was originally developed by Andre but Craig messed up the git history again.
-"""
 
 def search_hotels(
     destination: str,
