@@ -51,6 +51,8 @@ Or manually create a `.env` file with:
 AMADEUS_CLIENT_ID=your_key_here
 AMADEUS_SECRET=your_secret_here
 OPENAI_API_KEY=your_openai_key_here
+OPENWEATHER_API_KEY=openweather_key_here
+PHQ_API_KEY=predicthq_key_here
 ```
 
 ### 5️⃣ Run the Application
